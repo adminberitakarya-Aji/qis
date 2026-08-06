@@ -81,4 +81,21 @@ export class ExchangeAccountService {
 
     await this.prisma.exchangeAccount.delete({ where: { id } });
   }
-}
+
+  async getBalance(userId: string, accountId: string) {
+    const account = await this.prisma.exchangeAccount.findUnique({ where: { id: accountId } });
+    if (!account) {
+      throw new NotFoundException('Exchange account not found');
+    }
+    if (account.userId !== userId) {
+      throw new ForbiddenException('You do not own this exchange account');
+    }
+
+    const { ExchangeEngine } = await import('@qis/exchange-engine');
+    const exchangeEngine = new ExchangeEngine();
+    const apiKey = this.crypto.decrypt(account.apiKey);
+    const apiSecret = this.crypto.decrypt(account.apiSecret);
+
+    return exchangeEngine.fetchBalance(account.exchange as 'binance' | 'bybit', apiKey, apiSecret);
+  }
+}

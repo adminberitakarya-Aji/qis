@@ -137,17 +137,16 @@ Binance / Bybit
 
 ## Tech Stack
 
-| Layer | Technology |
-|-------|-----------|
-| Monorepo | pnpm + Turborepo |
-| Language | TypeScript (full-stack) |
-| Frontend | Next.js 14+ (App Router) |
-| API | NestJS |
-| Worker | Node.js + BullMQ |
-| AI Service | Python FastAPI (proposed) |
-| Database | PostgreSQL + Prisma |
-| Cache / Queue | Redis |
-| Realtime | WebSocket (`ws`) |
+| Layer | Technology | Status |
+|-------|-----------|--------|
+| Monorepo | pnpm + Turborepo | ✅ Implemented |
+| Language | TypeScript (full-stack) + Python | ✅ Implemented |
+| Frontend | Next.js 15+ (App Router) + Pitch Black UI | ✅ Implemented |
+| API | NestJS + Prisma PostgreSQL | ✅ Implemented |
+| Worker | Node.js + WebSocket (`ws`) (`apps/worker`) | ✅ Implemented |
+| AI Service | Python 3.11+ FastAPI (`apps/ai-service`) | ✅ Implemented |
+| Database | PostgreSQL + Prisma | ✅ Implemented |
+| Realtime | Binance WebSocket Stream (`ws`) | ✅ Implemented |
 
 ---
 
@@ -169,10 +168,10 @@ qis/
 │   └── TECH_STACK.md            # Technology Stack
 │
 ├── apps/
-│   ├── web/                     # Frontend (Next.js)
+│   ├── web/                     # Frontend (Next.js 15 + Pitch Black UI)
 │   ├── api/                     # Backend API (NestJS)
-│   ├── worker/                  # Background Jobs (BullMQ)
-│   └── ai-service/              # AI Service (Python/FastAPI)
+│   ├── worker/                  # Binance WebSocket Live Price Worker
+│   └── ai-service/              # AI Service (Python 3.11 / FastAPI)
 │
 ├── packages/
 │   ├── core/                    # Domain Models & Core Business Logic
@@ -211,22 +210,14 @@ qis/
 ## Development Status
 
 ### MVP
-
-- [ ] Initialize Monorepo
-- [ ] Authentication
-- [ ] Database
-- [ ] Connect Binance
-- [ ] Connect Bybit
-- [ ] Market Engine
-- [ ] AI Pair Recommendation
-- [ ] AI Build Strategy
-- [ ] Strategy Blueprint
-- [ ] Simulation
-- [ ] Grid Engine
-- [ ] Execution Engine
-- [ ] Portfolio
-- [ ] Analytics
-- [ ] Notification
+- [x] Monorepo setup (pnpm + Turborepo)
+- [x] Python FastAPI AI Service (Technical Indicator Feature Extraction & Reasoning)
+- [x] NestJS Backend API & Prisma PostgreSQL persistence
+- [x] Binance WebSocket Live Price Monitor Worker (`apps/worker`)
+- [x] Level Crossing Rule & Market Order Execution Engine (`@qis/execution-engine`)
+- [x] Pitch Black UI Frontend (`apps/web`) with Live AI Pair Recommendations
+- [x] Multi-Section Grid Engine & Strategy Blueprint persistence
+- [x] Strategy Simulation Engine (`@qis/strategy-engine`)
 
 ### Version 1.1
 

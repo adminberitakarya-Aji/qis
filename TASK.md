@@ -1,20 +1,20 @@
 # MVP
 
-- [ ] Initialize Monorepo
-- [ ] Authentication
-- [ ] Database
-- [ ] Connect Binance
-- [ ] Connect Bybit
-- [ ] Market Engine
-- [ ] AI Pair Recommendation
-- [ ] AI Build Strategy
-- [ ] Strategy Blueprint
-- [ ] Simulation
-- [ ] Grid Engine
-- [ ] Execution Engine
-- [ ] Portfolio
-- [ ] Analytics
-- [ ] Notification
+- [x] Initialize Monorepo
+- [x] Authentication
+- [x] Database
+- [x] Connect Binance
+- [x] Connect Bybit
+- [x] Market Engine
+- [x] AI Pair Recommendation
+- [x] AI Build Strategy
+- [x] Strategy Blueprint
+- [x] Simulation
+- [x] Grid Engine
+- [x] Execution Engine
+- [x] Portfolio
+- [x] Analytics
+- [x] Notification
 
 ---
 

@@ -74,35 +74,35 @@ Fastify was considered and rejected: faster raw throughput, but Qis's bottleneck
 
 # Worker
 
-**Decision: Node.js + BullMQ**
+**Decision: Node.js + WebSocket (`ws`) — `apps/worker`**
 
 Reasoning:
 
-- Handles Market Data Collector polling/listening and Order Monitor jobs outside the request/response cycle
-- Redis-backed, integrates with the Cache/Queue layer below
-- Retry and backoff support built in
+- Monitors live market prices directly via Binance Public WebSocket streams (`wss://stream.binance.com:9443/ws/<symbol>@miniTicker`)
+- Detects grid price level crossings in real-time with sub-second latency and zero API key requirement
+- Triggers instant Market Orders via NestJS API (`POST /api/v1/execution/trigger-order`) protected by internal `x-worker-secret` authentication header
+- Automatically reconnects on disconnect with exponential backoff and periodic heartbeat
 
 Constraint:
 
-Every job must be idempotent. A duplicated "check order status" execution (from BullMQ retry or worker restart) must never trigger a duplicate notification or overwrite state incorrectly. This connects directly to the Idempotency Rules in BUSINESS_RULES_ADDENDUM.md.
+Every job and trigger must be idempotent. A duplicate price tick or trigger request must never create duplicate grid orders or corrupt state. This connects directly to the Idempotency Rules in BUSINESS_RULES_ADDENDUM.md.
 
 ---
 
 # AI Service
 
-**Decision: Python, FastAPI**
+**Decision: Python 3.11+, FastAPI (`apps/ai-service`)**
 
 This is the one layer where full TypeScript consistency is intentionally broken.
 
 Reasoning:
 
-- AI Engine's responsibilities (Market Analysis, Confidence Score, technical indicators) benefit from Python's data ecosystem (pandas, numpy, ta-lib) — reimplementing technical indicators by hand in TypeScript costs solo-developer time with no real benefit
-- AI Engine is already isolated behind a Provider interface per ARCHITECTURE.md's Provider Independence rule — it communicates with other Engines only through a defined API/queue contract, so there is no shared-code cost to using a different language
-- Faster prototyping for market analysis logic during MVP
+- AI Engine's responsibilities (Market Analysis, Technical Feature Extraction, Confidence Score) benefit from Python's robust data ecosystem (`pandas`, `numpy`, `ccxt`)
+- Feature Extraction calculates RSI(14), Bollinger Band Width (20,2), ATR % (14), 24h Volatility, and Sideways score across 20 liquid spot candidate pairs (BTC, ETH, SOL, BNB, XRP, ADA, AVAX, NEAR, etc.)
+- Explainable AI Engine (`reasoning.py`) synthesizes technical indicators into human-readable trader reasoning texts and risk-adjusted per-section parameters
+- `@qis/ai-engine` (TypeScript) acts as an HTTP client connecting to `http://localhost:8000` (`POST /analyze/top-pairs` & `POST /analyze/strategy`) with local heuristic fallback if Python service is offline
 
-Node.js was considered as the single-runtime alternative and rejected: the tooling benefit of Python for market analysis outweighs the operational cost of running one additional service type in `infrastructure/`.
-
-Isolation requirement: the AI Service must be reachable only through the AI Engine's defined interface (REST or queue contract). No other Engine may call the AI Service directly.
+Isolation requirement: the AI Service is reachable only through `@qis/ai-engine` REST contract. No other Engine may call the Python AI Service directly.
 
 ---
 

@@ -26,4 +26,10 @@ export class ExchangeAccountController {
     await this.exchangeAccountService.remove(user.id, id);
     return { success: true, message: 'Exchange account removed' };
   }
-}
+
+  @Get(':id/balance')
+  async getBalance(@CurrentUser() user: { id: string }, @Param('id') id: string) {
+    const data = await this.exchangeAccountService.getBalance(user.id, id);
+    return { success: true, message: 'Exchange account balance retrieved', data };
+  }
+}

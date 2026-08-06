@@ -1,0 +1,24 @@
+{
+  "name": "@qis/worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Qis Background Worker — Binance WebSocket Price Monitor & Grid Order Trigger",
+  "scripts": {
+    "dev": "ts-node --esm src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@qis/exchange-engine": "workspace:*",
+    "@qis/shared": "workspace:*",
+    "ws": "^8.18.0",
+    "axios": "^1.7.9"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.0"
+  }
+}
