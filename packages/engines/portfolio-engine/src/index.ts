@@ -5,8 +5,17 @@
 // - Realized PnL Calculation
 // - Unrealized PnL Estimation
 // - Position Summary per Strategy
+//
+// Secret Ownership Rule:
+//   Portfolio Engine does NOT decrypt. It receives encrypted blobs and
+//   forwards them to Exchange Engine. Exchange Engine is the only Engine
+//   that holds the Master Key.
 
-import { ExchangeEngine, type ExchangeBalance } from '@qis/exchange-engine';
+import {
+  ExchangeEngine,
+  type ExchangeBalance,
+  type DecryptContext,
+} from '@qis/exchange-engine';
 
 export interface StrategyOrderSnapshot {
   clientOrderId: string;
@@ -60,16 +69,105 @@ export interface CurrentPriceMap {
   [pair: string]: number; // e.g. 'BTC/USDT' -> 65000
 }
 
+export interface EncryptedCredentials {
+  encryptedApiKey: string;
+  encryptedApiSecret: string;
+  keyVersion: number;
+  context?: DecryptContext;
+}
+
 export class PortfolioEngine {
   private exchangeEngine: ExchangeEngine;
 
-  constructor() {
-    this.exchangeEngine = new ExchangeEngine();
+  constructor(exchangeEngine?: ExchangeEngine) {
+    this.exchangeEngine = exchangeEngine ?? new ExchangeEngine();
   }
+
+  // ============================================================
+  // *Encrypted — PREFERRED
+  // ============================================================
 
   /**
    * Aggregates portfolio overview from exchange balance + active strategy snapshots.
+   * Caller passes encrypted credentials; decryption happens inside Exchange Engine.
    */
+  async buildPortfolioOverviewEncrypted(
+    exchange: 'binance' | 'bybit',
+    credentials: EncryptedCredentials,
+    activeStrategies: Array<{
+      strategyId: string;
+      blueprintId: string;
+      pair: string;
+      capital: number;
+      orders: StrategyOrderSnapshot[];
+    }>,
+    currentPrices: CurrentPriceMap
+  ): Promise<PortfolioOverview> {
+    const balance: ExchangeBalance = await this.exchangeEngine.fetchBalanceEncrypted(
+      exchange,
+      credentials.encryptedApiKey,
+      credentials.encryptedApiSecret,
+      credentials.context,
+    );
+
+    const usdtAsset = balance.balances.find((b: any) => b.asset === 'USDT');
+    const totalUsdt = usdtAsset?.total ?? 0;
+    const freeUsdt = usdtAsset?.free ?? 0;
+
+    const strategySummaries: StrategyPortfolioSummary[] = activeStrategies.map((strat) =>
+      this.calculateStrategySummary(
+        strat.strategyId,
+        strat.blueprintId,
+        exchange,
+        strat.pair,
+        strat.capital,
+        strat.orders,
+        currentPrices[strat.pair] ?? 0,
+      ),
+    );
+
+    const totalAllocated = strategySummaries.reduce((sum, s) => sum + s.allocatedCapital, 0);
+    const totalRealizedPnl = strategySummaries.reduce((sum, s) => sum + s.realizedPnlUsdt, 0);
+    const totalUnrealizedPnl = strategySummaries.reduce(
+      (sum, s) => sum + s.unrealizedPnlUsdt,
+      0,
+    );
+
+    const assetBreakdown = balance.balances.map((b: any) => {
+      let estimatedUsdt = 0;
+      if (b.asset === 'USDT') {
+        estimatedUsdt = b.total;
+      } else {
+        const pairKey = `${b.asset}/USDT`;
+        const price = currentPrices[pairKey] ?? 0;
+        estimatedUsdt = b.total * price;
+      }
+      return {
+        asset: b.asset,
+        free: b.free,
+        used: b.used,
+        total: b.total,
+        estimatedUsdt: Number(estimatedUsdt.toFixed(2)),
+      };
+    });
+
+    return {
+      exchange,
+      totalBalanceUsdt: Number(totalUsdt.toFixed(2)),
+      freeBalanceUsdt: Number(freeUsdt.toFixed(2)),
+      allocatedInStrategiesUsdt: Number(totalAllocated.toFixed(2)),
+      totalRealizedPnlUsdt: Number(totalRealizedPnl.toFixed(4)),
+      totalUnrealizedPnlUsdt: Number(totalUnrealizedPnl.toFixed(4)),
+      strategies: strategySummaries,
+      assetBreakdown,
+      lastUpdatedAt: Date.now(),
+    };
+  }
+
+  // ============================================================
+  // Plaintext — kept for legacy / Engine-to-Engine internal calls.
+  // ============================================================
+
   async buildPortfolioOverview(
     exchange: 'binance' | 'bybit',
     apiKey: string,
@@ -83,53 +181,40 @@ export class PortfolioEngine {
     }>,
     currentPrices: CurrentPriceMap
   ): Promise<PortfolioOverview> {
-    // Fetch live balance
     const balance: ExchangeBalance = await this.exchangeEngine.fetchBalance(
       exchange,
       apiKey,
-      apiSecret
+      apiSecret,
     );
 
     const usdtAsset = balance.balances.find((b: any) => b.asset === 'USDT');
     const totalUsdt = usdtAsset?.total ?? 0;
     const freeUsdt = usdtAsset?.free ?? 0;
 
-    // Build strategy summaries
-    const strategySummaries: StrategyPortfolioSummary[] = activeStrategies.map(
-      (strat) => {
-        const summary = this.calculateStrategySummary(
-          strat.strategyId,
-          strat.blueprintId,
-          exchange,
-          strat.pair,
-          strat.capital,
-          strat.orders,
-          currentPrices[strat.pair] ?? 0
-        );
-        return summary;
-      }
+    const strategySummaries: StrategyPortfolioSummary[] = activeStrategies.map((strat) =>
+      this.calculateStrategySummary(
+        strat.strategyId,
+        strat.blueprintId,
+        exchange,
+        strat.pair,
+        strat.capital,
+        strat.orders,
+        currentPrices[strat.pair] ?? 0,
+      ),
     );
 
-    const totalAllocated = strategySummaries.reduce(
-      (sum, s) => sum + s.allocatedCapital,
-      0
-    );
-    const totalRealizedPnl = strategySummaries.reduce(
-      (sum, s) => sum + s.realizedPnlUsdt,
-      0
-    );
+    const totalAllocated = strategySummaries.reduce((sum, s) => sum + s.allocatedCapital, 0);
+    const totalRealizedPnl = strategySummaries.reduce((sum, s) => sum + s.realizedPnlUsdt, 0);
     const totalUnrealizedPnl = strategySummaries.reduce(
       (sum, s) => sum + s.unrealizedPnlUsdt,
-      0
+      0,
     );
 
-    // Build asset breakdown with USDT estimation
     const assetBreakdown = balance.balances.map((b: any) => {
       let estimatedUsdt = 0;
       if (b.asset === 'USDT') {
         estimatedUsdt = b.total;
       } else {
-        // Try to find price from current prices map
         const pairKey = `${b.asset}/USDT`;
         const price = currentPrices[pairKey] ?? 0;
         estimatedUsdt = b.total * price;
@@ -176,19 +261,16 @@ export class PortfolioEngine {
     let profitableRounds = 0;
 
     for (const order of orders) {
-      // Completed (TP hit)
       if (order.status === 'tp_filled' && order.realizedPnl !== null) {
         realizedPnl += order.realizedPnl;
         completedRounds++;
         if (order.realizedPnl > 0) profitableRounds++;
       }
 
-      // Open position (buy filled, TP not yet hit)
       if (order.status === 'filled' || order.status === 'tp_placed') {
         openPositions++;
         allocatedCapital += order.allocatedCapital;
 
-        // Unrealized PnL based on current market price
         if (order.buyFilledPrice && order.buyFilledQuantity && currentPrice > 0) {
           const currentValue = order.buyFilledQuantity * currentPrice;
           const costBasis = order.buyFilledQuantity * order.buyFilledPrice;
@@ -196,7 +278,6 @@ export class PortfolioEngine {
         }
       }
 
-      // Capital still in pending/placed orders (not yet filled)
       if (order.status === 'placed' || order.status === 'pending') {
         allocatedCapital += order.allocatedCapital;
       }

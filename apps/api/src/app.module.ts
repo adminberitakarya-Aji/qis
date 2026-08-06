@@ -11,6 +11,7 @@ import { PortfolioModule } from './portfolio/portfolio.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { NotificationModule } from './notification/notification.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { EnginesModule } from './engines/engines.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { PrismaModule } from './prisma/prisma.module';
       isGlobal: true,
     }),
     PrismaModule,
+    EnginesModule,
     AuthModule,
     ExchangeAccountModule,
     MarketModule,

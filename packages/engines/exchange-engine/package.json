@@ -23,6 +23,7 @@
     "ccxt": "^4.4.45"
   },
   "devDependencies": {
+    "@types/node": "^22.10.0",
     "rimraf": "^6.0.0",
     "typescript": "^5.7.0"
   }

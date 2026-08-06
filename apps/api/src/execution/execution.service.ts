@@ -1,15 +1,16 @@
 import {
   BadRequestException,
   ForbiddenException,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { CryptoService } from '../common/crypto.service';
 import { StrategyService } from '../strategy/strategy.service';
 import { StartExecutionDto } from './dto/start-execution.dto';
-import { ExchangeEngine } from '@qis/exchange-engine';
+import { EXCHANGE_ENGINE } from '../engines/engines.module';
+import { ExchangeEngine, type DecryptContext } from '@qis/exchange-engine';
 import { ExecutionEngine, type ExecutionOrderState } from '@qis/execution-engine';
 import { GridEngine } from '@qis/grid-engine';
 import type { Blueprint } from '@qis/shared';
@@ -17,15 +18,19 @@ import type { Blueprint } from '@qis/shared';
 @Injectable()
 export class ExecutionService {
   private readonly logger = new Logger(ExecutionService.name);
-  private executionEngine = new ExecutionEngine();
-  private exchangeEngine = new ExchangeEngine();
+  private executionEngine: ExecutionEngine;
   private gridEngine = new GridEngine();
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly crypto: CryptoService,
+    @Inject(EXCHANGE_ENGINE) exchangeEngine: ExchangeEngine,
     private readonly strategyService: StrategyService,
-  ) {}
+  ) {
+    // Reuse the shared Exchange Engine singleton so that all decryption stays
+    // inside the same Master Key boundary. Execution Engine itself never
+    // touches plaintext; it forwards the ciphertext to Exchange Engine.
+    this.executionEngine = new ExecutionEngine(exchangeEngine);
+  }
 
   async startExecution(userId: string, dto: StartExecutionDto) {
     // 1. Validate Blueprint exists and is not expired
@@ -49,7 +54,7 @@ export class ExecutionService {
       );
     }
 
-    // 3. Fetch exchange account and decrypt credentials
+    // 3. Fetch exchange account (no decryption here — credentials stay encrypted)
     const account = await this.prisma.exchangeAccount.findUnique({
       where: { id: dto.exchangeAccountId },
     });
@@ -57,13 +62,25 @@ export class ExecutionService {
     if (!account) throw new NotFoundException('Exchange account not found');
     if (account.userId !== userId) throw new ForbiddenException('You do not own this exchange account');
 
-    const apiKey = this.crypto.decrypt(account.apiKey);
-    const apiSecret = this.crypto.decrypt(account.apiSecret);
+    const credentials = {
+      encryptedApiKey: account.apiKeyEncrypted,
+      encryptedApiSecret: account.apiSecretEncrypted,
+      keyVersion: account.apiKeyKeyVersion,
+      context: {
+        exchangeAccountId: account.id,
+        userId: account.userId,
+        purpose: 'startExecution',
+      } satisfies DecryptContext,
+    };
 
-    // 4. Get current market price to anchor grid levels
+    // 4. Get current market price to anchor grid levels (Market Engine, no creds needed)
     let currentPrice = 100;
     try {
-      const ticker = await this.exchangeEngine.fetchTicker(
+      // Market data uses public endpoints (no credentials), so a local
+      // Engine instance is fine — no need to share the Exchange Engine here.
+      const { ExchangeEngine: ExchangeEngineClass } = await import('@qis/exchange-engine');
+      const publicTicker = new ExchangeEngineClass();
+      const ticker = await publicTicker.fetchTicker(
         blueprint.exchange as 'binance' | 'bybit',
         blueprint.pair,
       );
@@ -77,6 +94,7 @@ export class ExecutionService {
       data: {
         userId,
         blueprintId: blueprint.id,
+        exchangeAccountId: account.id,
         exchange: blueprint.exchange,
         pair: blueprint.pair,
         capital: blueprint.tradingCapital,
@@ -137,10 +155,11 @@ export class ExecutionService {
       realizedPnl: null,
     }));
 
-    const placeResult = await this.executionEngine.placeGridOrders(
+    // Per Secret Ownership Rule #5: Execution Engine forwards the ciphertext
+    // to Exchange Engine. Decryption + audit log happen inside Exchange Engine.
+    const placeResult = await this.executionEngine.placeGridOrdersEncrypted(
       blueprint.exchange as 'binance' | 'bybit',
-      apiKey,
-      apiSecret,
+      credentials,
       blueprint.pair,
       orderStates,
     );
@@ -182,14 +201,22 @@ export class ExecutionService {
       throw new BadRequestException('Strategy is not active');
     }
 
-    // Fetch exchange account
-    const account = await this.prisma.exchangeAccount.findFirst({
-      where: { userId, exchange: strategy.exchange, isActive: true },
+    // Fetch exchange account via the strategy's explicit binding
+    const account = await this.prisma.exchangeAccount.findUnique({
+      where: { id: strategy.exchangeAccountId },
     });
 
     if (account) {
-      const apiKey = this.crypto.decrypt(account.apiKey);
-      const apiSecret = this.crypto.decrypt(account.apiSecret);
+      const credentials = {
+        encryptedApiKey: account.apiKeyEncrypted,
+        encryptedApiSecret: account.apiSecretEncrypted,
+        keyVersion: account.apiKeyKeyVersion,
+        context: {
+          exchangeAccountId: account.id,
+          userId: account.userId,
+          purpose: 'stopExecution',
+        } satisfies DecryptContext,
+      };
 
       // Build order states from DB for cancellation
       const orderStates: ExecutionOrderState[] = strategy.orders.map((o) => ({
@@ -213,11 +240,10 @@ export class ExecutionService {
         realizedPnl: o.realizedPnl,
       }));
 
-      // Cancel all open orders
-      await this.executionEngine.cancelAllOpenOrders(
+      // Cancel all open orders via the encrypted path
+      const cancelResult = await this.executionEngine.cancelAllOpenOrdersEncrypted(
         strategy.exchange as 'binance' | 'bybit',
-        apiKey,
-        apiSecret,
+        credentials,
         strategy.pair,
         orderStates,
       );
@@ -231,6 +257,10 @@ export class ExecutionService {
           });
         }
       }
+
+      this.logger.log(
+        `[Execution] Stop strategy ${strategyId}: canceled=${cancelResult.canceled}, errors=${cancelResult.errors}`,
+      );
     }
 
     // Update strategy status
@@ -356,22 +386,26 @@ export class ExecutionService {
 
     const strategy = order.gridStrategy;
 
-    // Fetch exchange account for this strategy's user
-    const account = await this.prisma.exchangeAccount.findFirst({
-      where: {
-        userId: strategy.userId,
-        exchange: strategy.exchange,
-        isActive: true,
-      },
+    // Fetch exchange account via the strategy's explicit binding
+    const account = await this.prisma.exchangeAccount.findUnique({
+      where: { id: strategy.exchangeAccountId },
     });
 
     if (!account) {
-      this.logger.error(`[Worker] No active exchange account for strategy ${strategy.id}`);
-      throw new NotFoundException('No active exchange account found for strategy owner');
+      this.logger.error(`[Worker] No exchange account bound to strategy ${strategy.id}`);
+      throw new NotFoundException('No exchange account bound to strategy');
     }
 
-    const apiKey = this.crypto.decrypt(account.apiKey);
-    const apiSecret = this.crypto.decrypt(account.apiSecret);
+    const credentials = {
+      encryptedApiKey: account.apiKeyEncrypted,
+      encryptedApiSecret: account.apiSecretEncrypted,
+      keyVersion: account.apiKeyKeyVersion,
+      context: {
+        exchangeAccountId: account.id,
+        userId: account.userId,
+        purpose: 'triggerGridOrder',
+      } satisfies DecryptContext,
+    };
 
     // Build order state for ExecutionEngine
     const orderState: ExecutionOrderState = {
@@ -401,11 +435,11 @@ export class ExecutionService {
       data: { status: 'placed', placedAt: new Date() },
     });
 
-    // Execute Market Buy via ExchangeEngine
-    const fillResult = await this.executionEngine.executeSingleMarketBuy(
+    // Execute Market Buy via the encrypted path; decryption + audit log
+    // happen inside Exchange Engine.
+    const fillResult = await this.executionEngine.executeSingleMarketBuyEncrypted(
       strategy.exchange as 'binance' | 'bybit',
-      apiKey,
-      apiSecret,
+      credentials,
       strategy.pair,
       orderState,
       triggeredPrice,
@@ -425,7 +459,7 @@ export class ExecutionService {
     });
 
     this.logger.log(
-      `[Worker] ✅ Order ${orderId} (${strategy.pair}) filled at $${fillResult.filledPrice ?? triggeredPrice}`,
+      `[Worker] Order ${orderId} (${strategy.pair}) filled at $${fillResult.filledPrice ?? triggeredPrice}`,
     );
 
     return {

@@ -1,7 +1,8 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { CryptoService } from '../common/crypto.service';
 import { CreateExchangeAccountDto } from './dto/create-exchange-account.dto';
+import { EXCHANGE_ENGINE } from '../engines/engines.module';
+import { ExchangeEngine } from '@qis/exchange-engine';
 
 const MAX_EXCHANGE_ACCOUNTS = 5;
 
@@ -9,7 +10,7 @@ const MAX_EXCHANGE_ACCOUNTS = 5;
 export class ExchangeAccountService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly crypto: CryptoService
+    @Inject(EXCHANGE_ENGINE) private readonly exchangeEngine: ExchangeEngine,
   ) {}
 
   async create(userId: string, dto: CreateExchangeAccountDto) {
@@ -33,13 +34,21 @@ export class ExchangeAccountService {
       throw new BadRequestException(`Exchange account label "${dto.label}" already exists for ${dto.exchange}`);
     }
 
+    // Encryption is delegated to Exchange Engine, which is the sole holder of
+    // the Master Key. The API service never touches plaintext secrets beyond
+    // this function scope, and Exchange Engine never returns the ciphertext
+    // back to the caller.
+    const encrypted = this.exchangeEngine.encryptCredentials(dto.apiKey, dto.apiSecret);
+
     const account = await this.prisma.exchangeAccount.create({
       data: {
         userId,
         exchange: dto.exchange,
         label: dto.label,
-        apiKey: this.crypto.encrypt(dto.apiKey),
-        apiSecret: this.crypto.encrypt(dto.apiSecret),
+        apiKeyEncrypted: encrypted.apiKeyEncrypted,
+        apiKeyKeyVersion: encrypted.apiKeyKeyVersion,
+        apiSecretEncrypted: encrypted.apiSecretEncrypted,
+        apiSecretKeyVersion: encrypted.apiSecretKeyVersion,
       },
     });
 
@@ -91,11 +100,18 @@ export class ExchangeAccountService {
       throw new ForbiddenException('You do not own this exchange account');
     }
 
-    const { ExchangeEngine } = await import('@qis/exchange-engine');
-    const exchangeEngine = new ExchangeEngine();
-    const apiKey = this.crypto.decrypt(account.apiKey);
-    const apiSecret = this.crypto.decrypt(account.apiSecret);
-
-    return exchangeEngine.fetchBalance(account.exchange as 'binance' | 'bybit', apiKey, apiSecret);
+    // Per Secret Ownership Rule #5: API service only forwards the ciphertext
+    // + audit context. Decryption happens inside Exchange Engine, which logs
+    // the event and never returns the plaintext to this scope.
+    return this.exchangeEngine.fetchBalanceEncrypted(
+      account.exchange as 'binance' | 'bybit',
+      account.apiKeyEncrypted,
+      account.apiSecretEncrypted,
+      {
+        exchangeAccountId: account.id,
+        userId: account.userId,
+        purpose: 'fetchBalance',
+      },
+    );
   }
-}
+}

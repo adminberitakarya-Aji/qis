@@ -1,18 +1,23 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { CryptoService } from '../common/crypto.service';
 import { PortfolioEngine, type StrategyOrderSnapshot } from '@qis/portfolio-engine';
 import { MarketEngine } from '@qis/market-engine';
+import { EXCHANGE_ENGINE } from '../engines/engines.module';
+import { ExchangeEngine } from '@qis/exchange-engine';
 
 @Injectable()
 export class PortfolioService {
-  private portfolioEngine = new PortfolioEngine();
+  private portfolioEngine: PortfolioEngine;
   private marketEngine = new MarketEngine();
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly crypto: CryptoService,
-  ) {}
+    @Inject(EXCHANGE_ENGINE) exchangeEngine: ExchangeEngine,
+  ) {
+    // Inject the same Exchange Engine singleton that every other module uses,
+    // so Portfolio Engine participates in the shared Master Key boundary.
+    this.portfolioEngine = new PortfolioEngine(exchangeEngine);
+  }
 
   async getPortfolioOverview(userId: string, exchangeAccountId: string) {
     const account = await this.prisma.exchangeAccount.findUnique({
@@ -23,12 +28,11 @@ export class PortfolioService {
       throw new NotFoundException('Exchange account not found');
     }
 
-    const apiKey = this.crypto.decrypt(account.apiKey);
-    const apiSecret = this.crypto.decrypt(account.apiSecret);
-
-    // Fetch active strategies for user
+    // Fetch active strategies scoped to the specific exchange account.
+    // This is correct because a user can have multiple accounts per exchange,
+    // and capital is committed per-account per Rule #6.
     const activeStrategies = await this.prisma.gridStrategy.findMany({
-      where: { userId, exchange: account.exchange, status: 'active' },
+      where: { userId, exchangeAccountId: account.id, status: 'active' },
       include: { orders: true },
     });
 
@@ -70,12 +74,52 @@ export class PortfolioService {
       ),
     }));
 
-    return this.portfolioEngine.buildPortfolioOverview(
+    // Per Secret Ownership Rule #5: forward the ciphertext blob + keyVersion
+    // + audit context. Decryption happens inside Exchange Engine, which logs
+    // the event and never returns the plaintext to this scope.
+    return this.portfolioEngine.buildPortfolioOverviewEncrypted(
       account.exchange as 'binance' | 'bybit',
-      apiKey,
-      apiSecret,
+      {
+        encryptedApiKey: account.apiKeyEncrypted,
+        encryptedApiSecret: account.apiSecretEncrypted,
+        keyVersion: account.apiKeyKeyVersion,
+        context: {
+          exchangeAccountId: account.id,
+          userId: account.userId,
+          purpose: 'portfolioOverview',
+        },
+      },
       strategyInputs,
       currentPrices,
     );
+  }
+
+  /**
+   * Computes committed capital (sum of `capital` across active strategies)
+   * for a specific exchange account, on-the-fly per Concurrency Rule #6.
+   * This is the single source of truth used by Strategy Engine before
+   * approving a new Blueprint.
+   */
+  async getCommittedCapital(userId: string, exchangeAccountId: string) {
+    const account = await this.prisma.exchangeAccount.findUnique({
+      where: { id: exchangeAccountId },
+    });
+
+    if (!account || account.userId !== userId) {
+      throw new NotFoundException('Exchange account not found');
+    }
+
+    const aggregate = await this.prisma.gridStrategy.aggregate({
+      where: { exchangeAccountId: account.id, status: 'active' },
+      _sum: { capital: true },
+      _count: { _all: true },
+    });
+
+    return {
+      exchangeAccountId: account.id,
+      exchange: account.exchange,
+      committedCapital: aggregate._sum.capital ?? 0,
+      activeStrategyCount: aggregate._count._all,
+    };
   }
 }

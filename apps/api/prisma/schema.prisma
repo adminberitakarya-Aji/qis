@@ -15,14 +15,14 @@ datasource db {
 // ============================================================
 
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
-  passwordHash String?
-  googleId     String?  @unique
-  name         String?
-  isEmailVerified Boolean @default(false)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id              String   @id @default(cuid())
+  email           String   @unique
+  passwordHash    String?
+  googleId        String?  @unique
+  name            String?
+  isEmailVerified Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   exchangeAccounts ExchangeAccount[]
   refreshTokens    RefreshToken[]
@@ -35,13 +35,13 @@ model User {
 // ============================================================
 
 model StrategyBlueprint {
-  id                           String   @id
-  userId                       String?  // Optional until auth flow attached
-  exchange                     String   // 'binance' | 'bybit'
-  pair                         String   // e.g. 'BTC/USDT'
+  id                           String   @id @default(cuid())
+  userId                       String
+  exchange                     String // 'binance' | 'bybit'
+  pair                         String // e.g. 'BTC/USDT'
   tradingCapital               Float
   sectionCount                 Int
-  sectionsJson                 String   // Serialized GridSection[]
+  sectionsJson                 String // Serialized GridSection[]
   capitalProtectionFloor       Float
   floorAction                  String   @default("notify")
   maxCapitalPerMovementPercent Float    @default(40.0)
@@ -51,7 +51,8 @@ model StrategyBlueprint {
   createdAt                    DateTime @default(now())
   expiresAt                    DateTime
 
-  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  gridStrategies GridStrategy[]
 
   @@index([userId])
   @@index([expiresAt])
@@ -62,23 +63,27 @@ model StrategyBlueprint {
 // ============================================================
 
 model GridStrategy {
-  id          String   @id @default(cuid())
-  userId      String
-  blueprintId String   @unique // Blueprint used to create this strategy
-  exchange    String   // 'binance' | 'bybit'
-  pair        String   // e.g. 'BTC/USDT'
-  capital     Float    // Total trading capital in USDT
-  status      String   @default("active") // 'active' | 'stopped' | 'completed' | 'error'
-  startedAt   DateTime @default(now())
-  stoppedAt   DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id                String    @id @default(cuid())
+  userId            String
+  blueprintId       String    @unique
+  exchangeAccountId String
+  exchange          String // 'binance' | 'bybit'
+  pair              String // e.g. 'BTC/USDT'
+  capital           Float // Total trading capital in USDT
+  status            String    @default("active") // 'active' | 'stopped' | 'completed' | 'error'
+  startedAt         DateTime  @default(now())
+  stoppedAt         DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
-  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  orders      GridOrder[]
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  blueprint       StrategyBlueprint @relation(fields: [blueprintId], references: [id])
+  exchangeAccount ExchangeAccount   @relation(fields: [exchangeAccountId], references: [id])
+  orders          GridOrder[]
 
   @@index([userId])
   @@index([status])
+  @@index([exchangeAccountId])
 }
 
 // ============================================================
@@ -86,33 +91,33 @@ model GridStrategy {
 // ============================================================
 
 model GridOrder {
-  id                   String    @id @default(cuid())
-  gridStrategyId       String
-  sectionIndex         Int
-  orderIndex           Int       // Within section
-  globalOrderIndex     Int
-  clientOrderId        String    @unique // Idempotency key
-  exchangeOrderId      String?   // ID returned by exchange
-  tpExchangeOrderId    String?   // TP order ID returned by exchange
-  gridPrice            Float     // Target buy price level
-  tpPrice              Float     // Take profit price
-  allocatedCapital     Float     // Allocated capital in USDT
-  estimatedQuantity    Float     // Estimated token quantity
-  status               String    @default("pending")
+  id                String    @id @default(cuid())
+  gridStrategyId    String
+  sectionIndex      Int
+  orderIndex        Int // Within section
+  globalOrderIndex  Int
+  clientOrderId     String    @unique // Idempotency key
+  exchangeOrderId   String? // ID returned by exchange
+  tpExchangeOrderId String? // TP order ID returned by exchange
+  gridPrice         Float // Target buy price level
+  tpPrice           Float // Take profit price
+  allocatedCapital  Float // Allocated capital in USDT
+  estimatedQuantity Float // Estimated token quantity
+  status            String    @default("pending")
   // 'pending' | 'placed' | 'filled' | 'tp_placed' | 'tp_filled' | 'canceled' | 'error'
-  buyFilledPrice       Float?    // Actual fill price
-  buyFilledQuantity    Float?
-  buyFee               Float?
-  tpFilledPrice        Float?
-  tpFee                Float?
-  realizedPnl          Float?    // Net PnL after TP hit
-  placedAt             DateTime?
-  filledAt             DateTime?
-  tpFilledAt           DateTime?
-  createdAt            DateTime  @default(now())
-  updatedAt            DateTime  @updatedAt
+  buyFilledPrice    Float? // Actual fill price
+  buyFilledQuantity Float?
+  buyFee            Float?
+  tpFilledPrice     Float?
+  tpFee             Float?
+  realizedPnl       Float? // Net PnL after TP hit
+  placedAt          DateTime?
+  filledAt          DateTime?
+  tpFilledAt        DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
-  gridStrategy         GridStrategy @relation(fields: [gridStrategyId], references: [id], onDelete: Cascade)
+  gridStrategy GridStrategy @relation(fields: [gridStrategyId], references: [id], onDelete: Cascade)
 
   @@index([gridStrategyId])
   @@index([status])
@@ -124,20 +129,26 @@ model GridOrder {
 // ============================================================
 
 model ExchangeAccount {
-  id        String   @id @default(cuid())
-  userId    String
-  exchange  String // 'binance' | 'bybit'
-  label     String
-  apiKey    String // encrypted
-  apiSecret String // encrypted
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                  String   @id @default(cuid())
+  userId              String
+  exchange            String // 'binance' | 'bybit'
+  label               String
+  // Envelope encryption: ciphertext blob packs iv:authTag:ciphertext (base64).
+  // keyVersion enables Master Key rotation without losing which record
+  // was encrypted with which KEK version. Per TECH_STACK.md.
+  apiKeyEncrypted     String
+  apiKeyKeyVersion    Int      @default(1)
+  apiSecretEncrypted  String
+  apiSecretKeyVersion Int      @default(1)
+  isActive            Boolean  @default(true)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  gridStrategies GridStrategy[]
 
-  @@index([userId])
   @@unique([userId, exchange, label])
+  @@index([userId])
 }
 
 // ============================================================

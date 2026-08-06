@@ -11,7 +11,7 @@ export class StrategyService {
 
   constructor(private prisma: PrismaService) {}
 
-  async buildStrategy(dto: BuildStrategyDto): Promise<Blueprint> {
+  async buildStrategy(userId: string, dto: BuildStrategyDto): Promise<Blueprint> {
     const blueprint = await this.strategyEngine.buildStrategy({
       exchange: dto.exchange,
       pair: dto.pair,
@@ -29,6 +29,7 @@ export class StrategyService {
       await this.prisma.strategyBlueprint.create({
         data: {
           id: blueprint.id,
+          userId,
           exchange: blueprint.exchange,
           pair: blueprint.pair,
           tradingCapital: blueprint.tradingCapital,

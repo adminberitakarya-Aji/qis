@@ -20,4 +20,17 @@ export class PortfolioController {
       data,
     };
   }
+
+  @Get('committed-capital/:exchangeAccountId')
+  async getCommittedCapital(
+    @CurrentUser() user: { id: string },
+    @Param('exchangeAccountId') exchangeAccountId: string,
+  ) {
+    const data = await this.portfolioService.getCommittedCapital(user.id, exchangeAccountId);
+    return {
+      success: true,
+      message: 'Committed capital retrieved',
+      data,
+    };
+  }
 }

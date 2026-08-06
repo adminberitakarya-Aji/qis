@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { CurrentUser } from '../auth/current-user.decorator';
 import { BuildStrategyDto } from './dto/build-strategy.dto';
 import { StrategyService } from './strategy.service';
 
@@ -9,8 +10,11 @@ export class StrategyController {
   constructor(private readonly strategyService: StrategyService) {}
 
   @Post('build')
-  async buildStrategy(@Body() dto: BuildStrategyDto) {
-    const data = await this.strategyService.buildStrategy(dto);
+  async buildStrategy(
+    @CurrentUser() user: { id: string },
+    @Body() dto: BuildStrategyDto,
+  ) {
+    const data = await this.strategyService.buildStrategy(user.id, dto);
     return {
       success: true,
       message: 'Strategy Blueprint generated successfully',

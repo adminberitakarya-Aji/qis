@@ -1,9 +1,21 @@
 // Qis Exchange Engine
+//
 // Secret Ownership Rule:
-// Only Exchange Engine may handle/receive decrypted secrets.
-// Business engines call Exchange Engine methods to perform exchange operations.
+//   Only Exchange Engine may handle/receive decrypted secrets.
+//   Business engines and API services call Exchange Engine methods with
+//   ciphertext still encrypted. Decryption happens inside this module only.
+//
+// Responsibilities:
+//   - REST API
+//   - WebSocket (upstream to Binance/Bybit)
+//   - Authentication (decryption of stored API credentials)
+//   - Order Submission
+// Contains no business logic.
 
 import ccxt from 'ccxt';
+import { ExchangeEngineCrypto, type DecryptContext } from './crypto.service';
+
+export { ExchangeEngineCrypto, type DecryptContext } from './crypto.service';
 
 export interface ExchangeBalanceItem {
   asset: string;
@@ -63,6 +75,20 @@ export interface OrderExecutionParams {
   clientOrderId: string;
 }
 
+export interface OrderExecutionParamsEncrypted {
+  exchange: 'binance' | 'bybit';
+  encryptedApiKey: string;
+  encryptedApiSecret: string;
+  keyVersion: number;
+  symbol: string;
+  side: 'buy' | 'sell';
+  amount: number;
+  price?: number;
+  type?: 'market' | 'limit';
+  clientOrderId: string;
+  context?: DecryptContext;
+}
+
 export interface ExecutionOrderResult {
   id: string;
   clientOrderId: string;
@@ -79,6 +105,19 @@ export interface ExecutionOrderResult {
 }
 
 export class ExchangeEngine {
+  private readonly crypto: ExchangeEngineCrypto;
+
+  constructor(crypto?: ExchangeEngineCrypto) {
+    // Crypto is created internally if not injected. This keeps the engine
+    // usable in unit tests with a mock and ensures the Master Key load
+    // happens at engine construction time (fail-fast on missing env).
+    this.crypto = crypto ?? new ExchangeEngineCrypto();
+  }
+
+  // ============================================================
+  // Internal: builds a ccxt client from plaintext credentials.
+  // Plaintext credentials must NEVER escape this method.
+  // ============================================================
   private createCcxtClient(
     exchangeName: 'binance' | 'bybit',
     apiKey?: string,
@@ -106,8 +145,19 @@ export class ExchangeEngine {
     }
   }
 
+  // ============================================================
+  // Public Plaintext Methods
+  //
+  // These are retained for testing and for internal calls where the
+  // caller already holds the decrypted secret (e.g. another Engine that
+  // has itself received it through the *Encrypted methods below — but
+  // note: NO engine other than Exchange Engine is supposed to call these
+  // with plaintext). New business code should always use *Encrypted.
+  // ============================================================
+
   /**
    * Validates API Key and Secret by attempting a lightweight API fetch.
+   * Plaintext-only.
    */
   async testConnection(
     exchange: 'binance' | 'bybit',
@@ -124,9 +174,6 @@ export class ExchangeEngine {
     }
   }
 
-  /**
-   * Fetches user balance for a given exchange account.
-   */
   async fetchBalance(
     exchange: 'binance' | 'bybit',
     apiKey: string,
@@ -162,9 +209,6 @@ export class ExchangeEngine {
     };
   }
 
-  /**
-   * Fetches active spot trading pairs supported by the exchange.
-   */
   async fetchPairs(exchange: 'binance' | 'bybit'): Promise<string[]> {
     const client = this.createCcxtClient(exchange);
     const markets = await client.loadMarkets();
@@ -173,9 +217,6 @@ export class ExchangeEngine {
       .map((m: any) => m.symbol as string);
   }
 
-  /**
-   * Fetches current market ticker data.
-   */
   async fetchTicker(exchange: 'binance' | 'bybit', pair: string): Promise<MarketTicker> {
     const client = this.createCcxtClient(exchange);
     const ticker = await client.fetchTicker(pair);
@@ -193,9 +234,6 @@ export class ExchangeEngine {
     };
   }
 
-  /**
-   * Fetches candlestick (OHLCV) historical data.
-   */
   async fetchOHLCV(
     exchange: 'binance' | 'bybit',
     pair: string,
@@ -204,7 +242,6 @@ export class ExchangeEngine {
   ): Promise<Candlestick[]> {
     const client = this.createCcxtClient(exchange);
     const ohlcv: number[][] = await client.fetchOHLCV(pair, timeframe, undefined, limit);
-
     return ohlcv.map((candle: number[]) => ({
       timestamp: candle[0] ?? 0,
       open: candle[1] ?? 0,
@@ -215,9 +252,6 @@ export class ExchangeEngine {
     }));
   }
 
-  /**
-   * Fetches orderbook depth.
-   */
   async fetchOrderBook(
     exchange: 'binance' | 'bybit',
     pair: string,
@@ -225,7 +259,6 @@ export class ExchangeEngine {
   ): Promise<OrderBook> {
     const client = this.createCcxtClient(exchange);
     const orderbook = await client.fetchOrderBook(pair, limit);
-
     return {
       symbol: pair,
       bids: (orderbook.bids || []).map((entry: number[]) => ({ price: entry[0], amount: entry[1] })),
@@ -234,9 +267,6 @@ export class ExchangeEngine {
     };
   }
 
-  /**
-   * Executes a spot order (Market or Limit) using Client Order ID for idempotency protection.
-   */
   async executeOrder(params: OrderExecutionParams): Promise<ExecutionOrderResult> {
     const { exchange, apiKey, apiSecret, symbol, side, amount, price, type = 'market', clientOrderId } = params;
     const client = this.createCcxtClient(exchange, apiKey, apiSecret);
@@ -270,9 +300,6 @@ export class ExchangeEngine {
     };
   }
 
-  /**
-   * Fetches current order status by ID or ClientOrderId.
-   */
   async fetchOrder(
     exchange: 'binance' | 'bybit',
     apiKey: string,
@@ -299,9 +326,6 @@ export class ExchangeEngine {
     };
   }
 
-  /**
-   * Cancels an open order on exchange.
-   */
   async cancelOrder(
     exchange: 'binance' | 'bybit',
     apiKey: string,
@@ -317,5 +341,101 @@ export class ExchangeEngine {
       console.error(`[ExchangeEngine] Failed to cancel order ${id}:`, error.message);
       return false;
     }
+  }
+
+  // ============================================================
+  // Public *Encrypted Methods — PREFERRED for all business callers
+  //
+  // These accept the ciphertext blob + keyVersion and decrypt internally.
+  // The plaintext is used only within this method scope, for the ccxt
+  // request, and is never returned, logged, or passed back to the caller.
+  // Per Secret Ownership Rule #5, ONLY this Engine may decrypt.
+  // ============================================================
+
+  async fetchBalanceEncrypted(
+    exchange: 'binance' | 'bybit',
+    encryptedApiKey: string,
+    encryptedApiSecret: string,
+    context?: DecryptContext
+  ): Promise<ExchangeBalance> {
+    const apiKey = this.crypto.decrypt(encryptedApiKey, context);
+    const apiSecret = this.crypto.decrypt(encryptedApiSecret, context);
+    return this.fetchBalance(exchange, apiKey, apiSecret);
+  }
+
+  async testConnectionEncrypted(
+    exchange: 'binance' | 'bybit',
+    encryptedApiKey: string,
+    encryptedApiSecret: string,
+    context?: DecryptContext
+  ): Promise<boolean> {
+    const apiKey = this.crypto.decrypt(encryptedApiKey, context);
+    const apiSecret = this.crypto.decrypt(encryptedApiSecret, context);
+    return this.testConnection(exchange, apiKey, apiSecret);
+  }
+
+  async executeOrderEncrypted(params: OrderExecutionParamsEncrypted): Promise<ExecutionOrderResult> {
+    const apiKey = this.crypto.decrypt(params.encryptedApiKey, params.context);
+    const apiSecret = this.crypto.decrypt(params.encryptedApiSecret, params.context);
+    return this.executeOrder({
+      exchange: params.exchange,
+      apiKey,
+      apiSecret,
+      symbol: params.symbol,
+      side: params.side,
+      amount: params.amount,
+      price: params.price,
+      type: params.type,
+      clientOrderId: params.clientOrderId,
+    });
+  }
+
+  async fetchOrderEncrypted(
+    exchange: 'binance' | 'bybit',
+    encryptedApiKey: string,
+    encryptedApiSecret: string,
+    id: string,
+    symbol: string,
+    context?: DecryptContext
+  ): Promise<ExecutionOrderResult> {
+    const apiKey = this.crypto.decrypt(encryptedApiKey, context);
+    const apiSecret = this.crypto.decrypt(encryptedApiSecret, context);
+    return this.fetchOrder(exchange, apiKey, apiSecret, id, symbol);
+  }
+
+  async cancelOrderEncrypted(
+    exchange: 'binance' | 'bybit',
+    encryptedApiKey: string,
+    encryptedApiSecret: string,
+    id: string,
+    symbol: string,
+    context?: DecryptContext
+  ): Promise<boolean> {
+    const apiKey = this.crypto.decrypt(encryptedApiKey, context);
+    const apiSecret = this.crypto.decrypt(encryptedApiSecret, context);
+    return this.cancelOrder(exchange, apiKey, apiSecret, id, symbol);
+  }
+
+  /**
+   * Encrypts a pair of API credentials for at-rest storage. Returns the
+   * ciphertext blobs + their keyVersions ready to be written to the DB.
+   *
+   * Encryption is safe to expose to API services — the Master Key never
+   * leaves this Engine, and the resulting ciphertext is useless without it.
+   * Decryption, however, must only happen inside this Engine's *Encrypted
+   * methods (see Secret Ownership Rule #5).
+   */
+  encryptCredentials(apiKey: string, apiSecret: string): {
+    apiKeyEncrypted: string;
+    apiKeyKeyVersion: number;
+    apiSecretEncrypted: string;
+    apiSecretKeyVersion: number;
+  } {
+    return {
+      apiKeyEncrypted: this.crypto.encrypt(apiKey),
+      apiKeyKeyVersion: this.crypto.getCurrentKeyVersion(),
+      apiSecretEncrypted: this.crypto.encrypt(apiSecret),
+      apiSecretKeyVersion: this.crypto.getCurrentKeyVersion(),
+    };
   }
 }
