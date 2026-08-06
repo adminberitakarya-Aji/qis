@@ -53,3 +53,14 @@ docker-compose.override.yml
 # Test outputs
 /coverage
 *.lcov
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+*.egg-info/
+dist/
+build/
