@@ -1,0 +1,23 @@
+{
+  "name": "qis",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Qis — AI-Assisted Grid Trading Platform",
+  "packageManager": "pnpm@10.34.5",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "clean": "turbo run clean"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.0",
+    "typescript": "^5.7.0",
+    "@types/node": "^22.10.0"
+  }
+}
