@@ -2,7 +2,7 @@
 
 # Qis Business Rules
 
-Version: 1.0
+Version: 1.1
 
 ---
 
@@ -301,31 +301,69 @@ The platform does not wait for basket profit.
 
 One completed order does not affect other orders.
 
+## Take Profit Calculation
+
+Take Profit is calculated from the **actual executed price**, not the grid level price.
+
+This is because execution uses market orders, so the actual fill price may differ from the grid level due to slippage.
+
+TP Price is calculated using the Net Profit formula:
+
+```
+TP_Price = Buy_Executed_Price × (1 + min_net_profit% + buy_fee% + sell_fee% + est_slippage%)
+```
+
+## Section Take Profit Rule
+
+Every Section has one `min_net_profit_percent` value.
+
+All Grid Orders inside the same Section use the same `min_net_profit_percent`.
+
+Deeper Sections (lower price) must have a higher `min_net_profit_percent` because they carry higher risk.
+
+Example
+
+Section 1
+
+min_net_profit_percent = 0.5%
+
+Section 2
+
+min_net_profit_percent = 0.8%
+
+Section 3
+
+min_net_profit_percent = 1.2%
+
+AI recommends `min_net_profit_percent` for each Section with reasoning.
+
+The trader may adjust the value before approval.
+
+The trader always owns the final decision.
+
 ---
 
 # Order Lifecycle
 
 Every Grid Order follows this lifecycle.
 
-Pending
+Buy Executed (market)
 
 ↓
 
-Buy Executed
-
-↓
-
-Waiting Take Profit
-
-↓
-
-Sell Executed
+Sell Executed (market)
 
 ↓
 
 Completed
 
 Every order is independent.
+
+There is no Pending state.
+
+There is no Waiting Take Profit state.
+
+Execution is instant.
 
 ---
 
@@ -340,6 +378,48 @@ Execution Engine must never:
 - Optimize the strategy
 
 Execution Engine only executes the approved Blueprint.
+
+## Instant Execution
+
+Qis uses **market orders** for both Buy and Sell.
+
+The system does not place limit orders in the order book.
+
+The system monitors the market price in real-time.
+
+When the market price touches or crosses a grid level, the system executes a market order instantly.
+
+There is no order queue.
+
+There is no risk of an order failing to fill because the price moved away.
+
+## Level Crossing Rule
+
+When the market price crosses multiple grid levels at once (a gap), all crossed levels are executed.
+
+Example
+
+Price drops from 100 to 95 in one move.
+
+Grid levels at 99, 98, 97, 96 are all crossed.
+
+All four levels are executed at the current market price.
+
+This preserves the grid structure and prevents missed fills.
+
+## Capital Protection on Gaps
+
+To protect against extreme flash crashes, a Blueprint may define a maximum percentage of capital that can be executed in a single price movement.
+
+Example
+
+Max 40% of capital per price movement.
+
+If a gap would trigger more than 40% of capital, only the first 40% is executed.
+
+The remaining levels wait for the next price movement.
+
+This is a protection rule, not a rate limit on time.
 
 ---
 

@@ -173,6 +173,17 @@ Output
 
 - Strategy Blueprint
 
+Blueprint contains per Section:
+
+- Grid Count
+- Grid Distance
+- Section Gap
+- min_net_profit_percent
+
+Each Section has one `min_net_profit_percent` value.
+
+All Grid Orders inside the same Section use the same `min_net_profit_percent`.
+
 ---
 
 ## Simulation
@@ -203,6 +214,16 @@ Responsibilities
 - Order History
 
 Trading only accepts approved Strategy Blueprints.
+
+Order response contains:
+
+- grid_price (the grid level price)
+- executed_price (the actual market fill price)
+- tp_price (the calculated take profit price)
+
+`executed_price` may differ from `grid_price` due to slippage.
+
+`tp_price` is calculated from `executed_price` using the Net Profit formula.
 
 ---
 

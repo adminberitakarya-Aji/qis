@@ -170,6 +170,10 @@ Examples:
 
 This Engine never creates strategies.
 
+Market Engine is the source of real-time price data used by Execution Engine to detect grid level crossings.
+
+It provides price updates through the real-time channel (WebSocket) owned by Exchange Engine.
+
 ---
 
 ## Grid Engine
@@ -189,12 +193,20 @@ Grid Engine follows the approved Blueprint.
 
 Responsible for:
 
-- Buy
-- Sell
+- Buy (market order)
+- Sell (market order)
 - Retry
 - Order Monitoring
+- Real-time price monitoring against grid levels
+- Triggering market orders when a grid level is touched or crossed
 
 Execution Engine never changes strategy.
+
+Execution Engine uses market orders for instant execution.
+
+It does not place limit orders in the order book.
+
+It monitors the market price in real-time and executes instantly when a grid level is reached.
 
 ---
 

@@ -278,6 +278,7 @@ Display:
 - Grid Distance
 - Section Gap
 - Take Profit
+- min_net_profit_percent (per Section)
 - Estimated Fees
 - Estimated Net Profit
 - Estimated Drawdown
@@ -285,6 +286,10 @@ Display:
 - AI Reasoning
 
 All information should fit naturally on a single page without overwhelming the user.
+
+Each Section must display its own `min_net_profit_percent`.
+
+The UI must explain that all Grid Orders inside a Section share the same `min_net_profit_percent`.
 
 ---
 
@@ -300,6 +305,30 @@ Display:
 - Remaining Capital
 
 Updates should be near real-time.
+
+## Instant Execution Display
+
+Qis uses market orders for instant execution.
+
+The Trading screen must display for each Grid Order:
+
+- grid_price (the grid level price)
+- executed_price (the actual market fill price)
+- tp_price (the calculated take profit price)
+- slippage (difference between grid_price and executed_price)
+
+The UI must clearly show that execution is instant.
+
+There is no "Pending" order state.
+
+Orders are either:
+
+- Waiting for Level (price has not reached the grid level yet)
+- Buy Executed (market buy completed)
+- Sell Executed (market sell completed)
+- Completed
+
+The UI must never imply that orders are queued in an order book.
 
 ---
 
