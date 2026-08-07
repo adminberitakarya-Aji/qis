@@ -72,14 +72,14 @@ This is the entire "Phase 1" from v2.0, cut down to what a solo dev can actually
 This is v2.0's section 2.1, resized. The dependency chain matters: **Risk Engine tuning and the Marketplace's "Verified Backtest" badge both need this to exist first** — so even if AI-related work is the priority, this is the correct first stop within that track, not the Marketplace itself.
 
 ### 1.1 Core (build this first, nothing else)
-- [ ] Historical OHLCV ingestion — reuse `@qis/market-engine`'s existing exchange fetch, store in a plain `HistoricalCandle` Postgres table (no TimescaleDB yet; revisit only if query performance actually suffers)
-- [ ] Candle-close simulation (not tick-level replay yet) — reuses `@qis/grid-engine`'s existing price-crossing logic directly, since that's already the exact logic running in production via the Worker
-- [ ] Model exchange fees and a fixed slippage assumption (e.g. 0.05%) — funding rates, partial fills, and latency simulation are Phase 2+ refinements, not blockers to a useful first backtest
-- [ ] One synchronous `POST /api/v1/backtest/run` endpoint returning a full result — skip the async job/status/report three-endpoint split until a backtest run is slow enough to need it
+- [x] Historical OHLCV ingestion — reuse `@qis/market-engine`'s existing exchange fetch, store in a plain `HistoricalCandle` Postgres table (no TimescaleDB yet; revisit only if query performance actually suffers)
+- [x] Candle-close simulation (not tick-level replay yet) — reuses `@qis/grid-engine`'s existing price-crossing logic directly, since that's already the exact logic running in production via the Worker
+- [x] Model exchange fees and a fixed slippage assumption (e.g. 0.05%) — funding rates, partial fills, and latency simulation are Phase 2+ refinements, not blockers to a useful first backtest
+- [x] One synchronous `POST /api/v1/backtest/run` endpoint returning a full result — skip the async job/status/report three-endpoint split until a backtest run is slow enough to need it
 
 ### 1.2 Minimum useful output
-- [ ] Equity curve + max drawdown + win rate + net profit — this is enough to compare AI-recommended grid parameters against a manual guess, which is the actual decision this engine needs to support
-- [ ] Defer: parameter sweep / Bayesian optimization, Monte Carlo resampling, walk-forward analysis, sensitivity heatmaps. These matter once you're optimizing an already-working strategy, not for the first version.
+- [x] Equity curve + max drawdown + win rate + net profit — this is enough to compare AI-recommended grid parameters against a manual guess, which is the actual decision this engine needs to support
+- [x] Defer: parameter sweep / Bayesian optimization, Monte Carlo resampling, walk-forward analysis, sensitivity heatmaps. These matter once you're optimizing an already-working strategy, not for the first version.
 
 ---
 

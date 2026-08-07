@@ -30,6 +30,7 @@ module.exports = {
     '^@qis/logger$': '<rootDir>/../../../packages/logger/dist/index.js',
     '^@qis/ai-engine$': '<rootDir>/../../../packages/engines/ai-engine/dist/index.js',
     '^@qis/analytics-engine$': '<rootDir>/../../../packages/engines/analytics-engine/dist/index.js',
+    '^@qis/backtest-engine$': '<rootDir>/../../../packages/engines/backtest-engine/dist/index.js',
     '^@qis/exchange-engine$': '<rootDir>/../../../packages/engines/exchange-engine/dist/index.js',
     '^@qis/execution-engine$': '<rootDir>/../../../packages/engines/execution-engine/dist/index.js',
     '^@qis/grid-engine$': '<rootDir>/../../../packages/engines/grid-engine/dist/index.js',

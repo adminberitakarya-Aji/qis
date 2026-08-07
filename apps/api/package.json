@@ -28,6 +28,7 @@
     "@prisma/client": "^5.22.0",
     "@qis/ai-engine": "workspace:*",
     "@qis/analytics-engine": "workspace:*",
+    "@qis/backtest-engine": "workspace:*",
     "@qis/core": "workspace:*",
     "@qis/exchange-engine": "workspace:*",
     "@qis/execution-engine": "workspace:*",
