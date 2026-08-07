@@ -239,17 +239,19 @@ export class ExecutionEngine {
 
     for (let attempt = 1; attempt <= MAX_RETRY; attempt++) {
       try {
-        const result = await this.exchangeEngine.executeOrder({
+        const result = await this.exchangeEngine.executeOrder(
           exchange,
           apiKey,
           apiSecret,
-          symbol,
-          side: 'buy',
-          amount: order.estimatedQuantity,
-          price: triggeredPrice,
-          type: 'market',
-          clientOrderId: order.clientOrderId,
-        });
+          {
+            symbol,
+            side: 'buy',
+            amount: order.estimatedQuantity,
+            price: triggeredPrice,
+            type: 'market',
+            clientOrderId: order.clientOrderId,
+          }
+        );
 
         exchangeOrderId = result.id;
         filledPrice = result.executedPrice ?? triggeredPrice;
@@ -273,17 +275,19 @@ export class ExecutionEngine {
 
       for (let attempt = 1; attempt <= MAX_RETRY; attempt++) {
         try {
-          const tpResult = await this.exchangeEngine.executeOrder({
+          const tpResult = await this.exchangeEngine.executeOrder(
             exchange,
             apiKey,
             apiSecret,
-            symbol,
-            side: 'sell',
-            amount: filledQuantity,
-            price: actualTpPrice,
-            type: 'limit',
-            clientOrderId: tpClientOrderId,
-          });
+            {
+              symbol,
+              side: 'sell',
+              amount: filledQuantity,
+              price: actualTpPrice,
+              type: 'limit',
+              clientOrderId: tpClientOrderId,
+            }
+          );
           tpExchangeOrderId = tpResult.id;
           console.log(
             `[ExecutionEngine] TP Sell placed for ${order.clientOrderId} at $${actualTpPrice} (fill was $${filledPrice})`,

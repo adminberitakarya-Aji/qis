@@ -455,15 +455,43 @@ export class ExecutionService {
    * - Actual fill price is recorded for TP calculation
    */
   async triggerGridOrder(orderId: string, triggeredPrice: number) {
+    // Atomically claim this order: a single conditional UPDATE moves it from
+    // 'pending' to 'filled' and is the ONLY thing that guards against
+    // double-trigger. The previous implementation did a separate
+    // findUnique() status check followed by a later update() — that
+    // read-then-write pattern is racy: two near-simultaneous calls for the
+    // same orderId (worker retry after a timeout, single + batch trigger
+    // overlapping, a second worker instance, etc.) could both pass the
+    // "is pending" check before either write landed, causing two real
+    // market buys for the same grid level. A single UPDATE ... WHERE
+    // status = 'pending' is atomic at the database level, so only one
+    // caller can ever win the claim.
+    const claim = await this.prisma.gridOrder.updateMany({
+      where: { id: orderId, status: 'pending' },
+      data: { status: 'filled', placedAt: new Date() },
+    });
+
+    if (claim.count === 0) {
+      // Either the order doesn't exist, or another concurrent call already
+      // claimed it. This extra read is only for a clear error/skip message
+      // and sits off the atomic hot path above.
+      const existing = await this.prisma.gridOrder.findUnique({ where: { id: orderId } });
+      if (!existing) throw new NotFoundException(`Grid order ${orderId} not found`);
+      this.logger.warn('Order is not pending, skipping', { orderId, status: existing.status });
+      return { skipped: true, reason: 'Order already processed' };
+    }
+
+    // Order is now safely claimed as 'filled' by this call, and only this
+    // call. Re-fetch with the strategy relation for execution details.
     const order = await this.prisma.gridOrder.findUnique({
       where: { id: orderId },
       include: { gridStrategy: true },
     });
 
-    if (!order) throw new NotFoundException(`Grid order ${orderId} not found`);
-    if (order.status !== 'pending') {
-      this.logger.warn('Order is not pending, skipping', { orderId, status: order.status });
-      return { skipped: true, reason: 'Order already processed' };
+    if (!order) {
+      // Defensive only — we just claimed this row, it cannot legitimately
+      // be gone.
+      throw new NotFoundException(`Grid order ${orderId} not found after claim`);
     }
 
     const strategy = order.gridStrategy;
@@ -475,6 +503,13 @@ export class ExecutionService {
 
     if (!account) {
       this.logger.error('No exchange account bound to strategy', { strategyId: strategy.id });
+      // The order was already claimed as 'filled' above but no buy was
+      // actually executed — mark it 'error' so it doesn't look like a
+      // real fill in the UI/analytics.
+      await this.prisma.gridOrder.update({
+        where: { id: orderId },
+        data: { status: 'error' },
+      });
       throw new NotFoundException('No exchange account bound to strategy');
     }
 
@@ -511,15 +546,10 @@ export class ExecutionService {
       realizedPnl: null,
     };
 
-    // Mark as 'filled' to prevent double-trigger (the market buy is executed
-    // immediately; no 'placed' intermediate state exists in trigger-based mode)
-    await this.prisma.gridOrder.update({
-      where: { id: orderId },
-      data: { status: 'filled', placedAt: new Date() },
-    });
-
     // Execute Market Buy via the encrypted path; decryption + audit log
-    // happen inside Exchange Engine.
+    // happen inside Exchange Engine. The order was already atomically
+    // claimed as 'filled' above, so no other concurrent caller can re-enter
+    // this block for the same orderId.
     const fillResult = await this.executionEngine.executeSingleMarketBuyEncrypted(
       strategy.exchange as 'binance' | 'bybit',
       credentials,
