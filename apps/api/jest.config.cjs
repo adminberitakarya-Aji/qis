@@ -40,6 +40,14 @@ module.exports = {
     '^@qis/providers-ai$': '<rootDir>/../../../packages/providers/ai/dist/index.js',
     '^@qis/providers-exchange$': '<rootDir>/../../../packages/providers/exchange/dist/index.js',
   },
+  // ccxt (via @noble/curves, @noble/hashes, @scure/*) ships ESM-only files in
+  // node_modules that Jest's default transformIgnorePatterns would skip, causing
+  // "Cannot use import statement outside a module". Allow those packages to be
+  // transpiled by ts-jest. The negative lookahead examines whatever follows
+  // `node_modules/` anywhere in the path — without it, pnpm's root
+  // `node_modules/.pnpm/...` prefix would make the ignore pattern match
+  // unconditionally and the ESM files would never be transformed.
+  transformIgnorePatterns: ['node_modules/(?!.*(?:@noble|@scure)/)'],
   transform: {
     '^.+\\.(t|j)s$': ['ts-jest', { isolatedModules: true, tsconfig: '<rootDir>/../tsconfig.json' }],
   },

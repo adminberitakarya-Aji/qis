@@ -1,6 +1,7 @@
 'use client';
 
-import React, { FormEvent, useState } from 'react';
+import type { FormEvent} from 'react';
+import React, { useState } from 'react';
 import { Zap, Mail, Lock, User as UserIcon, Loader2, Eye, EyeOff, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { login, register } from '@/lib/auth';
 

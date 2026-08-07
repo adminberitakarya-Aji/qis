@@ -5,6 +5,7 @@
 // future provider additions, and potential custom implementations.
 
 import ccxt from 'ccxt';
+import { circuitBreaker } from './circuit-breaker';
 
 export interface ExchangeBalanceItem {
   asset: string;
@@ -78,6 +79,14 @@ export interface ExecutionOrderResult {
 
 export type ExchangeName = 'binance' | 'bybit';
 
+export {
+  CircuitBreaker,
+  CircuitOpenError,
+  circuitBreaker,
+  type CircuitBreakerOptions,
+  type CircuitState,
+} from './circuit-breaker';
+
 // ============================================================
 // ExchangeProvider Interface
 // ============================================================
@@ -149,26 +158,30 @@ abstract class BaseExchangeProvider implements ExchangeProvider {
   // Public methods (unauthenticated)
   async fetchPairs(): Promise<string[]> {
     this.ensureClient();
-    const markets = await this.client.loadMarkets();
-    return Object.values(markets)
-      .filter((m: any) => m && m.spot && m.active)
-      .map((m: any) => m.symbol as string);
+    return circuitBreaker.run(this.name, 'fetchPairs', async () => {
+      const markets = await this.client.loadMarkets();
+      return Object.values(markets)
+        .filter((m: any) => m && m.spot && m.active)
+        .map((m: any) => m.symbol as string);
+    });
   }
 
   async fetchTicker(pair: string): Promise<MarketTicker> {
     this.ensureClient();
-    const ticker = await this.client.fetchTicker(pair);
-    return {
-      symbol: pair,
-      last: ticker.last ?? 0,
-      high: ticker.high ?? 0,
-      low: ticker.low ?? 0,
-      volume: ticker.baseVolume ?? 0,
-      change24hPercent: ticker.percentage ?? 0,
-      bid: ticker.bid ?? 0,
-      ask: ticker.ask ?? 0,
-      timestamp: ticker.timestamp ?? Date.now(),
-    };
+    return circuitBreaker.run(this.name, 'fetchTicker', async () => {
+      const ticker = await this.client.fetchTicker(pair);
+      return {
+        symbol: pair,
+        last: ticker.last ?? 0,
+        high: ticker.high ?? 0,
+        low: ticker.low ?? 0,
+        volume: ticker.baseVolume ?? 0,
+        change24hPercent: ticker.percentage ?? 0,
+        bid: ticker.bid ?? 0,
+        ask: ticker.ask ?? 0,
+        timestamp: ticker.timestamp ?? Date.now(),
+      };
+    });
   }
 
   async fetchOHLCV(
@@ -177,33 +190,39 @@ abstract class BaseExchangeProvider implements ExchangeProvider {
     limit: number = 100
   ): Promise<Candlestick[]> {
     this.ensureClient();
-    const ohlcv: number[][] = await this.client.fetchOHLCV(pair, timeframe, undefined, limit);
-    return ohlcv.map((candle: number[]) => ({
-      timestamp: candle[0] ?? 0,
-      open: candle[1] ?? 0,
-      high: candle[2] ?? 0,
-      low: candle[3] ?? 0,
-      close: candle[4] ?? 0,
-      volume: candle[5] ?? 0,
-    }));
+    return circuitBreaker.run(this.name, 'fetchOHLCV', async () => {
+      const ohlcv: number[][] = await this.client.fetchOHLCV(pair, timeframe, undefined, limit);
+      return ohlcv.map((candle: number[]) => ({
+        timestamp: candle[0] ?? 0,
+        open: candle[1] ?? 0,
+        high: candle[2] ?? 0,
+        low: candle[3] ?? 0,
+        close: candle[4] ?? 0,
+        volume: candle[5] ?? 0,
+      }));
+    });
   }
 
   async fetchOrderBook(pair: string, limit: number = 20): Promise<OrderBook> {
     this.ensureClient();
-    const orderbook = await this.client.fetchOrderBook(pair, limit);
-    return {
-      symbol: pair,
-      bids: (orderbook.bids || []).map((entry: number[]) => ({ price: entry[0], amount: entry[1] })),
-      asks: (orderbook.asks || []).map((entry: number[]) => ({ price: entry[0], amount: entry[1] })),
-      timestamp: orderbook.timestamp ?? Date.now(),
-    };
+    return circuitBreaker.run(this.name, 'fetchOrderBook', async () => {
+      const orderbook = await this.client.fetchOrderBook(pair, limit);
+      return {
+        symbol: pair,
+        bids: (orderbook.bids || []).map((entry: number[]) => ({ price: entry[0], amount: entry[1] })),
+        asks: (orderbook.asks || []).map((entry: number[]) => ({ price: entry[0], amount: entry[1] })),
+        timestamp: orderbook.timestamp ?? Date.now(),
+      };
+    });
   }
 
   // Authenticated methods
   async testConnection(): Promise<boolean> {
     this.ensureConfigured();
     try {
-      await this.client.fetchBalance();
+      await circuitBreaker.run(this.name, 'testConnection', async () => {
+        await this.client.fetchBalance();
+      });
       return true;
     } catch (error: any) {
       console.error(`[${this.name}] Connection test failed:`, error.message);
@@ -213,87 +232,95 @@ abstract class BaseExchangeProvider implements ExchangeProvider {
 
   async fetchBalance(): Promise<ExchangeBalance> {
     this.ensureConfigured();
-    const balanceResponse = await this.client.fetchBalance();
-    const balances: ExchangeBalanceItem[] = [];
+    return circuitBreaker.run(this.name, 'fetchBalance', async () => {
+      const balanceResponse = await this.client.fetchBalance();
+      const balances: ExchangeBalanceItem[] = [];
 
-    if (balanceResponse.total) {
-      for (const [asset, totalVal] of Object.entries(balanceResponse.total)) {
-        const total = typeof totalVal === 'number' ? totalVal : 0;
-        if (total > 0) {
-          const freeVal = balanceResponse.free?.[asset];
-          const usedVal = balanceResponse.used?.[asset];
-          const free = typeof freeVal === 'number' ? freeVal : 0;
-          const used = typeof usedVal === 'number' ? usedVal : 0;
+      if (balanceResponse.total) {
+        for (const [asset, totalVal] of Object.entries(balanceResponse.total)) {
+          const total = typeof totalVal === 'number' ? totalVal : 0;
+          if (total > 0) {
+            const freeVal = balanceResponse.free?.[asset];
+            const usedVal = balanceResponse.used?.[asset];
+            const free = typeof freeVal === 'number' ? freeVal : 0;
+            const used = typeof usedVal === 'number' ? usedVal : 0;
 
-          balances.push({ asset, free, used, total });
+            balances.push({ asset, free, used, total });
+          }
         }
       }
-    }
 
-    return {
-      exchange: this.name,
-      balances,
-      timestamp: Date.now(),
-    };
+      return {
+        exchange: this.name,
+        balances,
+        timestamp: Date.now(),
+      };
+    });
   }
 
   async executeOrder(params: OrderExecutionParams): Promise<ExecutionOrderResult> {
     this.ensureConfigured();
     const { symbol, side, amount, price, type = 'market', clientOrderId } = params;
 
-    const order = await this.client.createOrder(
-      symbol,
-      type,
-      side,
-      amount,
-      type === 'limit' ? price : undefined,
-      { clientOrderId }
-    );
+    return circuitBreaker.run(this.name, 'executeOrder', async () => {
+      const order = await this.client.createOrder(
+        symbol,
+        type,
+        side,
+        amount,
+        type === 'limit' ? price : undefined,
+        { clientOrderId }
+      );
 
-    const executedPrice = order.average ?? order.price ?? price ?? 0;
-    const feeCost = order.fee?.cost ?? 0;
-    const feeCurrency = order.fee?.currency ?? '';
+      const executedPrice = order.average ?? order.price ?? price ?? 0;
+      const feeCost = order.fee?.cost ?? 0;
+      const feeCurrency = order.fee?.currency ?? '';
 
-    return {
-      id: order.id,
-      clientOrderId: (order.clientOrderId as string) || clientOrderId,
-      symbol,
-      side,
-      status: (order.status as any) || (type === 'limit' ? 'open' : 'closed'),
-      executedPrice,
-      amount: order.amount ?? amount,
-      filled: order.filled ?? (type === 'market' ? amount : 0),
-      remaining: order.remaining ?? (type === 'market' ? 0 : amount),
-      fee: feeCost,
-      feeAsset: feeCurrency,
-      timestamp: order.timestamp ?? Date.now(),
-    };
+      return {
+        id: order.id,
+        clientOrderId: (order.clientOrderId as string) || clientOrderId,
+        symbol,
+        side,
+        status: (order.status as any) || (type === 'limit' ? 'open' : 'closed'),
+        executedPrice,
+        amount: order.amount ?? amount,
+        filled: order.filled ?? (type === 'market' ? amount : 0),
+        remaining: order.remaining ?? (type === 'market' ? 0 : amount),
+        fee: feeCost,
+        feeAsset: feeCurrency,
+        timestamp: order.timestamp ?? Date.now(),
+      };
+    });
   }
 
   async fetchOrder(id: string, symbol: string): Promise<ExecutionOrderResult> {
     this.ensureConfigured();
-    const order = await this.client.fetchOrder(id, symbol);
+    return circuitBreaker.run(this.name, 'fetchOrder', async () => {
+      const order = await this.client.fetchOrder(id, symbol);
 
-    return {
-      id: order.id,
-      clientOrderId: (order.clientOrderId as string) || id,
-      symbol,
-      side: order.side as 'buy' | 'sell',
-      status: (order.status as any) || 'open',
-      executedPrice: order.average ?? order.price ?? 0,
-      amount: order.amount ?? 0,
-      filled: order.filled ?? 0,
-      remaining: order.remaining ?? 0,
-      fee: order.fee?.cost ?? 0,
-      feeAsset: order.fee?.currency ?? '',
-      timestamp: order.timestamp ?? Date.now(),
-    };
+      return {
+        id: order.id,
+        clientOrderId: (order.clientOrderId as string) || id,
+        symbol,
+        side: order.side as 'buy' | 'sell',
+        status: (order.status as any) || 'open',
+        executedPrice: order.average ?? order.price ?? 0,
+        amount: order.amount ?? 0,
+        filled: order.filled ?? 0,
+        remaining: order.remaining ?? 0,
+        fee: order.fee?.cost ?? 0,
+        feeAsset: order.fee?.currency ?? '',
+        timestamp: order.timestamp ?? Date.now(),
+      };
+    });
   }
 
   async cancelOrder(id: string, symbol: string): Promise<boolean> {
     this.ensureConfigured();
     try {
-      await this.client.cancelOrder(id, symbol);
+      await circuitBreaker.run(this.name, 'cancelOrder', async () => {
+        await this.client.cancelOrder(id, symbol);
+      });
       return true;
     } catch (error: any) {
       console.error(`[${this.name}] Failed to cancel order ${id}:`, error.message);

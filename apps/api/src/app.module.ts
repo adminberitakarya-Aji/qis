@@ -11,10 +11,13 @@ import { ExecutionModule } from './execution/execution.module';
 import { PortfolioModule } from './portfolio/portfolio.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { NotificationModule } from './notification/notification.module';
+import { OpsAlertingModule } from './ops-alerting/ops-alerting.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { EnginesModule } from './engines/engines.module';
 import { RealtimeModule } from './realtime/realtime.module';
 import { IdempotencyModule } from './idempotency/idempotency.module';
+import { PrismaService } from './prisma/prisma.service';
+import { OpsAlertingService } from './ops-alerting/ops-alerting.service';
 
 @Module({
   imports: [
@@ -45,6 +48,16 @@ import { IdempotencyModule } from './idempotency/idempotency.module';
     PortfolioModule,
     AnalyticsModule,
     NotificationModule,
+    OpsAlertingModule,
+  ],
+  providers: [
+    {
+      provide: 'PRISMA_ALERTING_SETUP',
+      useFactory: (prisma: PrismaService, opsAlerting: OpsAlertingService) => {
+        prisma.setOpsAlerting(opsAlerting);
+      },
+      inject: [PrismaService, OpsAlertingService],
+    },
   ],
 })
 export class AppModule {}

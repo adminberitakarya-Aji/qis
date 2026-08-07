@@ -86,7 +86,7 @@ export class StrategyService {
           pair: dbBp.pair,
           tradingCapital: dbBp.tradingCapital,
           sectionCount: dbBp.sectionCount as any,
-          sections: JSON.parse(dbBp.sectionsJson),
+          sections: JSON.parse(dbBp.sectionsJson as string),
           capitalProtectionFloor: dbBp.capitalProtectionFloor,
           floorAction: dbBp.floorAction as any,
           maxCapitalPerMovementPercent: dbBp.maxCapitalPerMovementPercent,

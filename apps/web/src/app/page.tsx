@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { Sidebar, NavTab } from '@/components/Sidebar';
+import type { NavTab } from '@/components/Sidebar';
+import { Sidebar } from '@/components/Sidebar';
 import { Header } from '@/components/Header';
 import { DashboardView } from '@/components/DashboardView';
 import { AiStrategyView } from '@/components/AiStrategyView';
@@ -11,7 +12,8 @@ import { AnalyticsView } from '@/components/AnalyticsView';
 import { ExchangesView } from '@/components/ExchangesView';
 import { AuthPage } from '@/components/AuthPage';
 import { realtimeClient } from '@/lib/realtime';
-import { getStoredUser, clearAuth, logout, refreshTokens, User } from '@/lib/auth';
+import type { User } from '@/lib/auth';
+import { getStoredUser, clearAuth, logout, refreshTokens } from '@/lib/auth';
 
 const PAGE_TITLES: Record<NavTab, string> = {
   dashboard: 'Dashboard',

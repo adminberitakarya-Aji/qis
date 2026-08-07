@@ -15,6 +15,7 @@
 
 import WebSocket from 'ws';
 import { createServiceLogger } from '@qis/logger';
+import { createRestPollingFallback } from './rest-polling-fallback';
 
 const logger = createServiceLogger('qis-worker');
 
@@ -24,11 +25,28 @@ const BINANCE_WS_BASE = 'wss://stream.binance.com:9443/ws';
 const BYBIT_WS_BASE = 'wss://stream.bybit.com/v5/public/spot';
 const RECONNECT_DELAY_MS = 3000;
 const HEARTBEAT_INTERVAL_MS = 30_000;
+const MAX_RECONNECT_ATTEMPTS = 10; // Alert after this many failed reconnection attempts
 
 const WORKER_HEADERS = {
   'Content-Type': 'application/json',
   'x-worker-secret': WORKER_SECRET,
 };
+
+/**
+ * Send an operational alert to the API's ops alerting endpoint.
+ * Fire-and-forget — failures are logged but don't block the worker.
+ */
+async function sendOpsAlert(event: string, title: string, message: string, details?: Record<string, string | number>, severity: 'critical' | 'warning' = 'critical'): Promise<void> {
+  try {
+    await fetch(`${API_BASE_URL}/ops/alert`, {
+      method: 'POST',
+      headers: WORKER_HEADERS,
+      body: JSON.stringify({ event, title, message, details, severity }),
+    });
+  } catch (err: any) {
+    logger.error('Failed to send ops alert', { event }, err);
+  }
+}
 
 interface GridLevel {
   orderId: string;
@@ -54,6 +72,9 @@ const heartbeatTimers = new Map<string, NodeJS.Timeout>(); // Track heartbeat ti
 const strategyMap = new Map<string, ActiveStrategy>();
 let strategyRefreshInterval: NodeJS.Timeout | null = null; // Track the strategy refresh interval
 let isShuttingDown = false;
+
+// REST polling fallback when a WebSocket stream disconnects
+const restPollingFallback = createRestPollingFallback();
 
 // ============================================================
 // Graceful Shutdown Handler
@@ -93,6 +114,9 @@ function gracefulShutdown(signal: string): void {
   });
   heartbeatTimers.clear();
   logger.info(`Heartbeat timer(s) stopped`, { count: timerCount });
+
+  // Clear all REST polling fallback timers
+  restPollingFallback.stopAll();
 
   // Clear strategy map
   strategyMap.clear();
@@ -276,6 +300,9 @@ function subscribeToBinanceSymbol(binanceSymbol: string, strategies: ActiveStrat
       reconnectAttempts = 0;
       subscriptions.set(subKey, ws);
 
+      // Stop REST polling fallback since WS is back
+      restPollingFallback.stop(subKey);
+
       // Heartbeat to keep WS alive
       heartbeatTimer = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
@@ -321,6 +348,32 @@ function subscribeToBinanceSymbol(binanceSymbol: string, strategies: ActiveStrat
       if (!isShuttingDown) {
         reconnectAttempts++;
         const delay = Math.min(RECONNECT_DELAY_MS * reconnectAttempts, 30_000);
+
+        // Start REST polling fallback so grid levels are still checked
+        // while the WebSocket is down
+        restPollingFallback.start(
+          subKey,
+          'binance',
+          binanceSymbol.toUpperCase().replace('USDT', '/USDT'),
+          (price) => checkAndTrigger(strategies, price)
+        );
+
+        // Alert if we've exceeded max reconnect attempts
+        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+          sendOpsAlert(
+            'worker_ws_reconnect_failed',
+            'Worker WebSocket Reconnection Failed',
+            `Failed to reconnect to Binance WebSocket for ${binanceSymbol.toUpperCase()} after ${reconnectAttempts} attempts`,
+            {
+              exchange: 'binance',
+              symbol: binanceSymbol.toUpperCase(),
+              attempts: reconnectAttempts,
+              lastError: `WebSocket closed with code ${code}`,
+            },
+            'critical'
+          );
+        }
+        
         setTimeout(connect, delay);
       }
     });
@@ -363,6 +416,9 @@ function subscribeToBybitSymbol(bybitSymbol: string, strategies: ActiveStrategy[
       logger.info('Connected to Bybit stream', { symbol: bybitSymbol.toUpperCase() });
       reconnectAttempts = 0;
       subscriptions.set(subKey, ws);
+
+      // Stop REST polling fallback since WS is back
+      restPollingFallback.stop(subKey);
 
       // Subscribe to ticker stream
       ws.send(JSON.stringify({
@@ -421,6 +477,32 @@ function subscribeToBybitSymbol(bybitSymbol: string, strategies: ActiveStrategy[
       if (!isShuttingDown) {
         reconnectAttempts++;
         const delay = Math.min(RECONNECT_DELAY_MS * reconnectAttempts, 30_000);
+
+        // Start REST polling fallback so grid levels are still checked
+        // while the WebSocket is down
+        restPollingFallback.start(
+          subKey,
+          'bybit',
+          bybitSymbol.toUpperCase().replace('USDT', '/USDT'),
+          (price) => checkAndTrigger(strategies, price)
+        );
+
+        // Alert if we've exceeded max reconnect attempts
+        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+          sendOpsAlert(
+            'worker_ws_reconnect_failed',
+            'Worker WebSocket Reconnection Failed',
+            `Failed to reconnect to Bybit WebSocket for ${bybitSymbol.toUpperCase()} after ${reconnectAttempts} attempts`,
+            {
+              exchange: 'bybit',
+              symbol: bybitSymbol.toUpperCase(),
+              attempts: reconnectAttempts,
+              lastError: `WebSocket closed with code ${code}`,
+            },
+            'critical'
+          );
+        }
+        
         setTimeout(connect, delay);
       }
     });

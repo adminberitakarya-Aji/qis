@@ -16,6 +16,7 @@
 //   that holds the Master Key.
 
 import { ExchangeEngine, type DecryptContext } from '@qis/exchange-engine';
+import { withRetry } from '@qis/core';
 
 export type OrderStatus =
   | 'pending'
@@ -54,9 +55,6 @@ export interface EncryptedCredentials {
 }
 
 const MAX_RETRY = 3;
-const RETRY_DELAY_MS = 1000;
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export class ExecutionEngine {
   private exchangeEngine: ExchangeEngine;
@@ -101,34 +99,42 @@ export class ExecutionEngine {
     let fee: number | null = null;
     let tpExchangeOrderId: string | null = null;
 
-    for (let attempt = 1; attempt <= MAX_RETRY; attempt++) {
-      try {
-        const result = await this.exchangeEngine.executeOrderEncrypted({
-          exchange,
-          encryptedApiKey: credentials.encryptedApiKey,
-          encryptedApiSecret: credentials.encryptedApiSecret,
-          keyVersion: credentials.keyVersion,
-          context: credentials.context,
-          symbol,
-          side: 'buy',
-          amount: order.estimatedQuantity,
-          price: triggeredPrice,
-          type: 'market',
-          clientOrderId: order.clientOrderId,
-        });
+    try {
+      const result = await withRetry(
+        () =>
+          this.exchangeEngine.executeOrderEncrypted({
+            exchange,
+            encryptedApiKey: credentials.encryptedApiKey,
+            encryptedApiSecret: credentials.encryptedApiSecret,
+            keyVersion: credentials.keyVersion,
+            context: credentials.context,
+            symbol,
+            side: 'buy',
+            amount: order.estimatedQuantity,
+            price: triggeredPrice,
+            type: 'market',
+            clientOrderId: order.clientOrderId,
+          }),
+        {
+          maxAttempts: MAX_RETRY,
+          onRetry: (error: any, attempt, delayMs) => {
+            console.error(
+              `[ExecutionEngine] Market buy failed for ${order.clientOrderId} (attempt ${attempt}/${MAX_RETRY}), retrying in ${delayMs}ms:`,
+              error.message,
+            );
+          },
+        }
+      );
 
-        exchangeOrderId = result.id;
-        filledPrice = result.executedPrice ?? triggeredPrice;
-        filledQuantity = result.filled ?? order.estimatedQuantity;
-        fee = result.fee ?? 0;
-        break;
-      } catch (error: any) {
-        console.error(
-          `[ExecutionEngine] Market buy failed for ${order.clientOrderId} (attempt ${attempt}/${MAX_RETRY}):`,
-          error.message,
-        );
-        if (attempt < MAX_RETRY) await sleep(RETRY_DELAY_MS);
-      }
+      exchangeOrderId = result.id;
+      filledPrice = result.executedPrice ?? triggeredPrice;
+      filledQuantity = result.filled ?? order.estimatedQuantity;
+      fee = result.fee ?? 0;
+    } catch (error: any) {
+      console.error(
+        `[ExecutionEngine] Market buy failed for ${order.clientOrderId} after ${MAX_RETRY} attempts:`,
+        error.message,
+      );
     }
 
     if (filledPrice !== null && filledQuantity !== null) {
@@ -137,33 +143,41 @@ export class ExecutionEngine {
 
       const tpClientOrderId = `${order.clientOrderId}_tp`;
 
-      for (let attempt = 1; attempt <= MAX_RETRY; attempt++) {
-        try {
-          const tpResult = await this.exchangeEngine.executeOrderEncrypted({
-            exchange,
-            encryptedApiKey: credentials.encryptedApiKey,
-            encryptedApiSecret: credentials.encryptedApiSecret,
-            keyVersion: credentials.keyVersion,
-            context: credentials.context,
-            symbol,
-            side: 'sell',
-            amount: filledQuantity,
-            price: actualTpPrice,
-            type: 'limit',
-            clientOrderId: tpClientOrderId,
-          });
-          tpExchangeOrderId = tpResult.id;
-          console.log(
-            `[ExecutionEngine] TP Sell placed for ${order.clientOrderId} at $${actualTpPrice} (fill was $${filledPrice})`,
-          );
-          break;
-        } catch (tpErr: any) {
-          console.error(
-            `[ExecutionEngine] TP placement failed for ${order.clientOrderId} (attempt ${attempt}/${MAX_RETRY}):`,
-            tpErr.message,
-          );
-          if (attempt < MAX_RETRY) await sleep(RETRY_DELAY_MS);
-        }
+      try {
+        const tpResult = await withRetry(
+          () =>
+            this.exchangeEngine.executeOrderEncrypted({
+              exchange,
+              encryptedApiKey: credentials.encryptedApiKey,
+              encryptedApiSecret: credentials.encryptedApiSecret,
+              keyVersion: credentials.keyVersion,
+              context: credentials.context,
+              symbol,
+              side: 'sell',
+              amount: filledQuantity,
+              price: actualTpPrice,
+              type: 'limit',
+              clientOrderId: tpClientOrderId,
+            }),
+          {
+            maxAttempts: MAX_RETRY,
+            onRetry: (tpErr: any, attempt, delayMs) => {
+              console.error(
+                `[ExecutionEngine] TP placement failed for ${order.clientOrderId} (attempt ${attempt}/${MAX_RETRY}), retrying in ${delayMs}ms:`,
+                tpErr.message,
+              );
+            },
+          }
+        );
+        tpExchangeOrderId = tpResult.id;
+        console.log(
+          `[ExecutionEngine] TP Sell placed for ${order.clientOrderId} at $${actualTpPrice} (fill was $${filledPrice})`,
+        );
+      } catch (tpErr: any) {
+        console.error(
+          `[ExecutionEngine] TP placement failed for ${order.clientOrderId} after ${MAX_RETRY} attempts:`,
+          tpErr.message,
+        );
       }
     }
 
@@ -237,34 +251,42 @@ export class ExecutionEngine {
     let fee: number | null = null;
     let tpExchangeOrderId: string | null = null;
 
-    for (let attempt = 1; attempt <= MAX_RETRY; attempt++) {
-      try {
-        const result = await this.exchangeEngine.executeOrder(
-          exchange,
-          apiKey,
-          apiSecret,
-          {
-            symbol,
-            side: 'buy',
-            amount: order.estimatedQuantity,
-            price: triggeredPrice,
-            type: 'market',
-            clientOrderId: order.clientOrderId,
-          }
-        );
+    try {
+      const result = await withRetry(
+        () =>
+          this.exchangeEngine.executeOrder(
+            exchange,
+            apiKey,
+            apiSecret,
+            {
+              symbol,
+              side: 'buy',
+              amount: order.estimatedQuantity,
+              price: triggeredPrice,
+              type: 'market',
+              clientOrderId: order.clientOrderId,
+            }
+          ),
+        {
+          maxAttempts: MAX_RETRY,
+          onRetry: (error: any, attempt, delayMs) => {
+            console.error(
+              `[ExecutionEngine] Market buy failed for ${order.clientOrderId} (attempt ${attempt}/${MAX_RETRY}), retrying in ${delayMs}ms:`,
+              error.message,
+            );
+          },
+        }
+      );
 
-        exchangeOrderId = result.id;
-        filledPrice = result.executedPrice ?? triggeredPrice;
-        filledQuantity = result.filled ?? order.estimatedQuantity;
-        fee = result.fee ?? 0;
-        break;
-      } catch (error: any) {
-        console.error(
-          `[ExecutionEngine] Market buy failed for ${order.clientOrderId} (attempt ${attempt}/${MAX_RETRY}):`,
-          error.message,
-        );
-        if (attempt < MAX_RETRY) await sleep(RETRY_DELAY_MS);
-      }
+      exchangeOrderId = result.id;
+      filledPrice = result.executedPrice ?? triggeredPrice;
+      filledQuantity = result.filled ?? order.estimatedQuantity;
+      fee = result.fee ?? 0;
+    } catch (error: any) {
+      console.error(
+        `[ExecutionEngine] Market buy failed for ${order.clientOrderId} after ${MAX_RETRY} attempts:`,
+        error.message,
+      );
     }
 
     if (filledPrice !== null && filledQuantity !== null) {
@@ -273,33 +295,41 @@ export class ExecutionEngine {
 
       const tpClientOrderId = `${order.clientOrderId}_tp`;
 
-      for (let attempt = 1; attempt <= MAX_RETRY; attempt++) {
-        try {
-          const tpResult = await this.exchangeEngine.executeOrder(
-            exchange,
-            apiKey,
-            apiSecret,
-            {
-              symbol,
-              side: 'sell',
-              amount: filledQuantity,
-              price: actualTpPrice,
-              type: 'limit',
-              clientOrderId: tpClientOrderId,
-            }
-          );
-          tpExchangeOrderId = tpResult.id;
-          console.log(
-            `[ExecutionEngine] TP Sell placed for ${order.clientOrderId} at $${actualTpPrice} (fill was $${filledPrice})`,
-          );
-          break;
-        } catch (tpErr: any) {
-          console.error(
-            `[ExecutionEngine] TP placement failed for ${order.clientOrderId} (attempt ${attempt}/${MAX_RETRY}):`,
-            tpErr.message,
-          );
-          if (attempt < MAX_RETRY) await sleep(RETRY_DELAY_MS);
-        }
+      try {
+        const tpResult = await withRetry(
+          () =>
+            this.exchangeEngine.executeOrder(
+              exchange,
+              apiKey,
+              apiSecret,
+              {
+                symbol,
+                side: 'sell',
+                amount: filledQuantity,
+                price: actualTpPrice,
+                type: 'limit',
+                clientOrderId: tpClientOrderId,
+              }
+            ),
+          {
+            maxAttempts: MAX_RETRY,
+            onRetry: (tpErr: any, attempt, delayMs) => {
+              console.error(
+                `[ExecutionEngine] TP placement failed for ${order.clientOrderId} (attempt ${attempt}/${MAX_RETRY}), retrying in ${delayMs}ms:`,
+                tpErr.message,
+              );
+            },
+          }
+        );
+        tpExchangeOrderId = tpResult.id;
+        console.log(
+          `[ExecutionEngine] TP Sell placed for ${order.clientOrderId} at $${actualTpPrice} (fill was $${filledPrice})`,
+        );
+      } catch (tpErr: any) {
+        console.error(
+          `[ExecutionEngine] TP placement failed for ${order.clientOrderId} after ${MAX_RETRY} attempts:`,
+          tpErr.message,
+        );
       }
     }
 

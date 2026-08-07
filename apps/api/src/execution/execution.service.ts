@@ -15,6 +15,7 @@ import { GridEngine } from '@qis/grid-engine';
 import type { Blueprint } from '@qis/shared';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { IdempotencyService } from '../idempotency/idempotency.service';
+import { OpsAlertingService } from '../ops-alerting/ops-alerting.service';
 import { createServiceLogger } from '@qis/logger';
 
 @Injectable()
@@ -29,6 +30,7 @@ export class ExecutionService {
     private readonly strategyService: StrategyService,
     private readonly realtime: RealtimeGateway,
     private readonly idempotency: IdempotencyService,
+    private readonly opsAlerting: OpsAlertingService,
   ) {
     // Reuse the shared Exchange Engine singleton so that all decryption stays
     // inside the same Master Key boundary. Execution Engine itself never
@@ -263,29 +265,39 @@ export class ExecutionService {
         realizedPnl: o.realizedPnl,
       }));
 
-      // Cancel all open orders via the encrypted path
-      const cancelResult = await this.executionEngine.cancelAllOpenOrdersEncrypted(
-        strategy.exchange as 'binance' | 'bybit',
-        credentials,
-        strategy.pair,
-        orderStates,
-      );
+      try {
+        // Cancel all open orders via the encrypted path
+        const cancelResult = await this.executionEngine.cancelAllOpenOrdersEncrypted(
+          strategy.exchange as 'binance' | 'bybit',
+          credentials,
+          strategy.pair,
+          orderStates,
+        );
 
-      // Update canceled orders in DB
-      for (const o of orderStates) {
-        if (o.status === 'canceled') {
-          await this.prisma.gridOrder.update({
-            where: { clientOrderId: o.clientOrderId },
-            data: { status: 'canceled' },
-          });
+        // Update canceled orders in DB
+        for (const o of orderStates) {
+          if (o.status === 'canceled') {
+            await this.prisma.gridOrder.update({
+              where: { clientOrderId: o.clientOrderId },
+              data: { status: 'canceled' },
+            });
+          }
         }
-      }
 
-      this.logger.info('Stop strategy', {
-        strategyId,
-        canceled: cancelResult.canceled,
-        errors: cancelResult.errors,
-      });
+        this.logger.info('Stop strategy', {
+          strategyId,
+          canceled: cancelResult.canceled,
+          errors: cancelResult.errors,
+        });
+      } catch (err: any) {
+        // Unhandled error in stopExecution — this is a critical operational event
+        await this.opsAlerting.stopExecutionError({
+          strategyId,
+          error: err.message,
+          stack: err.stack,
+        });
+        throw err;
+      }
     }
 
     // Update strategy status
@@ -582,65 +594,115 @@ export class ExecutionService {
       realizedPnl: null,
     };
 
-    // Execute Market Buy via the encrypted path; decryption + audit log
-    // happen inside Exchange Engine. The order was already atomically
-    // claimed as 'filled' above, so no other concurrent caller can re-enter
-    // this block for the same orderId.
-    const fillResult = await this.executionEngine.executeSingleMarketBuyEncrypted(
-      strategy.exchange as 'binance' | 'bybit',
-      credentials,
-      strategy.pair,
-      orderState,
-      triggeredPrice,
-    );
+    try {
+      // Execute Market Buy via the encrypted path; decryption + audit log
+      // happen inside Exchange Engine. The order was already atomically
+      // claimed as 'filled' above, so no other concurrent caller can re-enter
+      // this block for the same orderId.
+      const fillResult = await this.executionEngine.executeSingleMarketBuyEncrypted(
+        strategy.exchange as 'binance' | 'bybit',
+        credentials,
+        strategy.pair,
+        orderState,
+        triggeredPrice,
+      );
 
-    // Update order with actual fill data
-    await this.prisma.gridOrder.update({
-      where: { id: orderId },
-      data: {
-        status: 'filled',
-        exchangeOrderId: fillResult.exchangeOrderId ?? undefined,
-        buyFilledPrice: fillResult.filledPrice ?? triggeredPrice,
-        buyFilledQuantity: fillResult.filledQuantity ?? order.estimatedQuantity,
-        buyFee: fillResult.fee ?? 0,
-        filledAt: new Date(),
-      },
-    });
+      // Check if market buy failed after all retries (exchangeOrderId and filledPrice will be null)
+      if (!fillResult.exchangeOrderId || fillResult.filledPrice === null) {
+        await this.opsAlerting.exchangeRetryExhausted({
+          operation: 'market_buy',
+          orderId,
+          strategyId: strategy.id,
+          exchange: strategy.exchange,
+          symbol: strategy.pair,
+          attempts: 3, // MAX_RETRY from ExecutionEngine
+          lastError: 'All retry attempts exhausted',
+        });
 
-    // If TP SELL LIMIT was placed, update the order with its exchange ID
-    if (fillResult.tpExchangeOrderId) {
+        // Mark order as error
+        await this.prisma.gridOrder.update({
+          where: { id: orderId },
+          data: { status: 'error' },
+        }).catch(() => {});
+
+        throw new Error('Market buy failed after all retry attempts');
+      }
+
+      // Update order with actual fill data
       await this.prisma.gridOrder.update({
         where: { id: orderId },
         data: {
-          status: 'tp_placed',
-          tpExchangeOrderId: fillResult.tpExchangeOrderId,
+          status: 'filled',
+          exchangeOrderId: fillResult.exchangeOrderId ?? undefined,
+          buyFilledPrice: fillResult.filledPrice ?? triggeredPrice,
+          buyFilledQuantity: fillResult.filledQuantity ?? order.estimatedQuantity,
+          buyFee: fillResult.fee ?? 0,
+          filledAt: new Date(),
         },
       });
+
+      // If TP SELL LIMIT was placed, update the order with its exchange ID
+      if (fillResult.tpExchangeOrderId) {
+        await this.prisma.gridOrder.update({
+          where: { id: orderId },
+          data: {
+            status: 'tp_placed',
+            tpExchangeOrderId: fillResult.tpExchangeOrderId,
+          },
+        });
+      } else {
+        // TP placement failed after all retries - alert
+        await this.opsAlerting.exchangeRetryExhausted({
+          operation: 'tp_placement',
+          orderId,
+          strategyId: strategy.id,
+          exchange: strategy.exchange,
+          symbol: strategy.pair,
+          attempts: 3, // MAX_RETRY from ExecutionEngine
+          lastError: 'All retry attempts exhausted for TP placement',
+        });
+      }
+
+      this.logger.info('Order filled', {
+        orderId,
+        pair: strategy.pair,
+        filledPrice: fillResult.filledPrice ?? triggeredPrice,
+      });
+
+      // Emit real-time update to the strategy owner (Real-Time Data Rules)
+      this.realtime.emitOrderUpdate(strategy.userId, {
+        orderId,
+        strategyId: strategy.id,
+        pair: strategy.pair,
+        status: fillResult.tpExchangeOrderId ? 'tp_placed' : 'filled',
+        filledPrice: fillResult.filledPrice ?? triggeredPrice,
+        exchangeOrderId: fillResult.exchangeOrderId,
+        tpExchangeOrderId: fillResult.tpExchangeOrderId,
+      });
+
+      return {
+        orderId,
+        status: fillResult.tpExchangeOrderId ? 'tp_placed' : 'filled',
+        filledPrice: fillResult.filledPrice ?? triggeredPrice,
+        exchangeOrderId: fillResult.exchangeOrderId,
+        tpExchangeOrderId: fillResult.tpExchangeOrderId,
+      };
+    } catch (err: any) {
+      // Unhandled error in triggerGridOrder — this is a critical operational event
+      await this.opsAlerting.triggerGridOrderError({
+        orderId,
+        strategyId: strategy.id,
+        error: err.message,
+        stack: err.stack,
+      });
+
+      // Mark order as error so it doesn't look like a real fill
+      await this.prisma.gridOrder.update({
+        where: { id: orderId },
+        data: { status: 'error' },
+      }).catch(() => {}); // Best effort
+
+      throw err; // Re-throw to let the caller handle it
     }
-
-    this.logger.info('Order filled', {
-      orderId,
-      pair: strategy.pair,
-      filledPrice: fillResult.filledPrice ?? triggeredPrice,
-    });
-
-    // Emit real-time update to the strategy owner (Real-Time Data Rules)
-    this.realtime.emitOrderUpdate(strategy.userId, {
-      orderId,
-      strategyId: strategy.id,
-      pair: strategy.pair,
-      status: fillResult.tpExchangeOrderId ? 'tp_placed' : 'filled',
-      filledPrice: fillResult.filledPrice ?? triggeredPrice,
-      exchangeOrderId: fillResult.exchangeOrderId,
-      tpExchangeOrderId: fillResult.tpExchangeOrderId,
-    });
-
-    return {
-      orderId,
-      status: fillResult.tpExchangeOrderId ? 'tp_placed' : 'filled',
-      filledPrice: fillResult.filledPrice ?? triggeredPrice,
-      exchangeOrderId: fillResult.exchangeOrderId,
-      tpExchangeOrderId: fillResult.tpExchangeOrderId,
-    };
   }
 }

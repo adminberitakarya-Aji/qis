@@ -17,7 +17,9 @@ export default defineConfig({
       '@qis/market-engine': path.resolve(__dirname, 'packages/engines/market-engine/src/index.ts'),
       '@qis/analytics-engine': path.resolve(__dirname, 'packages/engines/analytics-engine/src/index.ts'),
       '@qis/exchange-engine': path.resolve(__dirname, 'packages/engines/exchange-engine/src/index.ts'),
+      '@qis/logger': path.resolve(__dirname, 'packages/logger/src/index.ts'),
       '@qis/providers-ai': path.resolve(__dirname, 'packages/providers/ai/src/index.ts'),
+      '@qis/providers-exchange': path.resolve(__dirname, 'packages/providers/exchange/src/index.ts'),
     },
   },
 });

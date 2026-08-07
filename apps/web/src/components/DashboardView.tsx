@@ -13,7 +13,8 @@ import {
   Wifi,
   WifiOff,
 } from 'lucide-react';
-import { getTopPairRecommendations, PairRecommendation } from '@/lib/api';
+import type { PairRecommendation } from '@/lib/api';
+import { getTopPairRecommendations } from '@/lib/api';
 
 interface DashboardViewProps {
   onNavigateToStrategy: (pair?: string) => void;
