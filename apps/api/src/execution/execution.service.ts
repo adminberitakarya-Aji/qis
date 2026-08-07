@@ -177,15 +177,51 @@ export class ExecutionService {
       if (cached) return cached;
     }
 
+    // Atomically claim the strategy for stopping: a single conditional
+    // UPDATE moves it from 'active' to 'stopping', scoped to the owning
+    // user in the same WHERE clause. The previous implementation did a
+    // separate findUnique() + status/ownership check followed by a later
+    // update() to 'stopped' — a check-then-act race, same class as the
+    // one fixed in triggerGridOrder(). Lower blast radius here (worst case
+    // was cancelAllOpenOrdersEncrypted() running twice, which the exchange
+    // mostly no-ops on already-canceled orders), but a double-tap on
+    // "Stop" in the UI or a retried API call could otherwise both pass the
+    // "is active" check and both attempt to cancel + finalize concurrently.
+    //
+    // Using 'stopping' as a real intermediate status (not just a comment)
+    // also closes a second, subtler gap: triggerGridOrdersBatch() and the
+    // worker's active-strategy query both filter on status === 'active',
+    // so as soon as this claim lands, no new grid order can be triggered
+    // for this strategy while cancellation is still in flight — previously
+    // the strategy stayed 'active' in the DB for the entire duration of
+    // the cancel-orders call, leaving a window where the worker could
+    // still trigger a fresh buy mid-shutdown.
+    const claim = await this.prisma.gridStrategy.updateMany({
+      where: { id: strategyId, userId, status: 'active' },
+      data: { status: 'stopping' },
+    });
+
+    if (claim.count === 0) {
+      // Distinguish not-found / not-owned / already-inactive only for a
+      // clear error message — this extra read sits off the atomic hot
+      // path above.
+      const existing = await this.prisma.gridStrategy.findUnique({ where: { id: strategyId } });
+      if (!existing) throw new NotFoundException('Grid strategy not found');
+      if (existing.userId !== userId) throw new ForbiddenException('You do not own this strategy');
+      throw new BadRequestException('Strategy is not active');
+    }
+
+    // Strategy is now safely claimed as 'stopping' by this call, and only
+    // this call. Re-fetch with orders for the cancel step below.
     const strategy = await this.prisma.gridStrategy.findUnique({
       where: { id: strategyId },
       include: { orders: true },
     });
 
-    if (!strategy) throw new NotFoundException('Grid strategy not found');
-    if (strategy.userId !== userId) throw new ForbiddenException('You do not own this strategy');
-    if (strategy.status !== 'active') {
-      throw new BadRequestException('Strategy is not active');
+    if (!strategy) {
+      // Defensive only — we just claimed this row, it cannot legitimately
+      // be gone.
+      throw new NotFoundException('Grid strategy not found after claim');
     }
 
     // Fetch exchange account via the strategy's explicit binding

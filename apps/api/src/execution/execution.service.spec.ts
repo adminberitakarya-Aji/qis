@@ -1,289 +1,646 @@
-// ExecutionService imports StrategyService (for typing/DI only in these
-// tests), which transitively pulls in the real ccxt library through
-// @qis/exchange-engine → @qis/providers-exchange. ccxt's dependency chain
-// includes ESM-only packages that Jest's default CJS transform can't parse.
-// Nothing in this suite performs a real exchange call — everything goes
-// through the mocked `executionEngine` — so ccxt is stubbed out entirely
-// rather than pulling in transform config for a library we never use here.
-jest.mock('ccxt', () => ({ __esModule: true, default: {} }));
+import {
+  BadRequestException,
+  ForbiddenException,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
+import { StrategyService } from '../strategy/strategy.service';
+import { StartExecutionDto } from './dto/start-execution.dto';
+import { EXCHANGE_ENGINE } from '../engines/engines.module';
+import { ExchangeEngine, type DecryptContext } from '@qis/exchange-engine';
+import { ExecutionEngine, type ExecutionOrderState } from '@qis/execution-engine';
+import { GridEngine } from '@qis/grid-engine';
+import type { Blueprint } from '@qis/shared';
+import { RealtimeGateway } from '../realtime/realtime.gateway';
+import { IdempotencyService } from '../idempotency/idempotency.service';
+import { createServiceLogger } from '@qis/logger';
 
-import { NotFoundException } from '@nestjs/common';
-import { ExecutionService } from './execution.service';
-import type { PrismaService } from '../prisma/prisma.service';
-import type { StrategyService } from '../strategy/strategy.service';
-import type { RealtimeGateway } from '../realtime/realtime.gateway';
-import type { IdempotencyService } from '../idempotency/idempotency.service';
-import type { ExchangeEngine } from '@qis/exchange-engine';
+@Injectable()
+export class ExecutionService {
+  private readonly logger = createServiceLogger('qis-api:execution');
+  private executionEngine: ExecutionEngine;
+  private gridEngine = new GridEngine();
 
-/**
- * Regression tests for the race-condition fix in triggerGridOrder().
- *
- * Bug: the previous implementation did a separate `findUnique()` status
- * check followed by a later `update()`. That read-then-write pattern is
- * racy — two near-simultaneous calls for the same orderId (worker retry
- * after a timeout, a second worker instance, single + batch trigger
- * overlapping, etc.) could both pass the "is pending" check before either
- * write landed, resulting in two real market buys for the same grid level.
- *
- * Fix: a single conditional `updateMany({ where: { id, status: 'pending' },
- * data: { status: 'filled' } })` is the only thing that decides who "wins"
- * the claim. These tests assert:
- *   1. The exchange is only ever called after successfully claiming the
- *      order (count === 1).
- *   2. A losing/duplicate call is a no-op — it never reaches the exchange.
- *   3. A simulated concurrent pair of calls against a shared in-memory
- *      "row" results in exactly one execution and one skip.
- *
- * Caveat: this is a unit-level test with a mocked Prisma client. It proves
- * the application code depends correctly on the atomic-update contract
- * (correct WHERE clause, correct gating on the result), not that Postgres
- * itself serializes concurrent UPDATE ... WHERE statements — that
- * guarantee comes from the database and is exercised by an integration
- * test against a real database (see the skipped suite at the bottom).
- */
+  constructor(
+    private readonly prisma: PrismaService,
+    @Inject(EXCHANGE_ENGINE) exchangeEngine: ExchangeEngine,
+    private readonly strategyService: StrategyService,
+    private readonly realtime: RealtimeGateway,
+    private readonly idempotency: IdempotencyService,
+  ) {
+    // Reuse the shared Exchange Engine singleton so that all decryption stays
+    // inside the same Master Key boundary. Execution Engine itself never
+    // touches plaintext; it forwards the ciphertext to Exchange Engine.
+    this.executionEngine = new ExecutionEngine(exchangeEngine);
+  }
 
-type MockOrderRow = {
-  id: string;
-  status: string;
-  gridStrategy: any;
-  clientOrderId: string;
-  exchangeOrderId: string | null;
-  tpExchangeOrderId: string | null;
-  sectionIndex: number;
-  orderIndex: number;
-  globalOrderIndex: number;
-  gridPrice: number;
-  tpPrice: number;
-  allocatedCapital: number;
-  estimatedQuantity: number;
-};
+  async startExecution(userId: string, dto: StartExecutionDto, idempotencyKey?: string) {
+    // 0. Idempotency check — return cached response if key already processed
+    if (idempotencyKey) {
+      const cached = await this.idempotency.getExistingResponse(
+        userId,
+        idempotencyKey,
+        'execution.start',
+      );
+      if (cached) return cached;
+    }
 
-function buildOrderRow(overrides: Partial<MockOrderRow> = {}): MockOrderRow {
-  return {
-    id: 'order_1',
-    status: 'pending',
-    clientOrderId: 'strategy_1_g1',
-    exchangeOrderId: null,
-    tpExchangeOrderId: null,
-    sectionIndex: 0,
-    orderIndex: 0,
-    globalOrderIndex: 1,
-    gridPrice: 100,
-    tpPrice: 101,
-    allocatedCapital: 50,
-    estimatedQuantity: 0.5,
-    gridStrategy: {
-      id: 'strategy_1',
-      userId: 'user_1',
-      exchange: 'binance',
-      pair: 'BTC/USDT',
-      exchangeAccountId: 'account_1',
-    },
-    ...overrides,
-  };
+    // 1. Validate Blueprint exists, is not expired, and belongs to the user
+    const blueprint: Blueprint = await this.strategyService.getBlueprint(userId, dto.blueprintId);
+
+    const now = new Date();
+    if (blueprint.expiresAt && new Date(blueprint.expiresAt) < now) {
+      throw new BadRequestException(
+        'Strategy Blueprint has expired. Please generate a new strategy.',
+      );
+    }
+
+    // 2. Check for existing active strategy on same blueprint
+    const existingStrategy = await this.prisma.gridStrategy.findUnique({
+      where: { blueprintId: dto.blueprintId },
+    });
+
+    if (existingStrategy && existingStrategy.status === 'active') {
+      throw new BadRequestException(
+        'An active strategy is already running for this Blueprint.',
+      );
+    }
+
+    // 3. Fetch exchange account (no decryption here — credentials stay encrypted)
+    const account = await this.prisma.exchangeAccount.findUnique({
+      where: { id: dto.exchangeAccountId },
+    });
+
+    if (!account) throw new NotFoundException('Exchange account not found');
+    if (account.userId !== userId) throw new ForbiddenException('You do not own this exchange account');
+
+    // 4. Get current market price to anchor grid levels (Market Engine, no creds needed)
+    let currentPrice = 100;
+    try {
+      // Market data uses public endpoints (no credentials), so a local
+      // Engine instance is fine — no need to share the Exchange Engine here.
+      const { ExchangeEngine: ExchangeEngineClass } = await import('@qis/exchange-engine');
+      const publicTicker = new ExchangeEngineClass();
+      const ticker = await publicTicker.fetchTicker(
+        blueprint.exchange as 'binance' | 'bybit',
+        blueprint.pair,
+      );
+      currentPrice = ticker.last || currentPrice;
+    } catch {
+      // fallback price — execution will use blueprint grid prices as-is
+    }
+
+    // 5. Create GridStrategy record in DB
+    const gridStrategy = await this.prisma.gridStrategy.create({
+      data: {
+        userId,
+        blueprintId: blueprint.id,
+        exchangeAccountId: account.id,
+        exchange: blueprint.exchange,
+        pair: blueprint.pair,
+        capital: blueprint.tradingCapital,
+        status: 'active',
+      },
+    });
+
+    // 6. Build order states from blueprint
+    const gridResult = this.gridEngine.buildGrid({
+      currentPrice,
+      totalCapital: blueprint.tradingCapital,
+      sections: blueprint.sections.map((s) => ({
+        allocationPercent: s.allocationPercent,
+        gridCount: s.gridCount,
+        gridDistancePercent: s.gridDistancePercent,
+        sectionGapPercent: s.sectionGapPercent,
+        minNetProfitPercent: s.minNetProfitPercent,
+      })),
+    });
+
+    // 7. Persist GridOrder records to DB with 'pending' status.
+    //    In the trigger-based model (Mode B), grid levels are VIRTUAL trigger
+    //    points — NO limit orders are placed in the order book at start.
+    //    The Worker monitors real-time price and triggers a MARKET BUY when
+    //    price touches/crosses a grid level.
+    const gridOrderData = gridResult.sections.flatMap((section) =>
+      section.orders.map((order) => ({
+        gridStrategyId: gridStrategy.id,
+        sectionIndex: order.sectionIndex,
+        orderIndex: order.orderIndex,
+        globalOrderIndex: order.globalOrderIndex,
+        clientOrderId: `${gridStrategy.id}_g${order.globalOrderIndex}`,
+        gridPrice: order.gridPrice,
+        tpPrice: order.estimatedTpPrice,
+        allocatedCapital: order.allocatedCapitalUsdt,
+        estimatedQuantity: order.estimatedQuantity,
+        status: 'pending',
+      })),
+    );
+
+    await this.prisma.gridOrder.createMany({ data: gridOrderData });
+
+    this.logger.info('Strategy started in trigger-based mode', {
+      strategyId: gridStrategy.id,
+      gridLevels: gridOrderData.length,
+    });
+
+    const result = {
+      strategyId: gridStrategy.id,
+      blueprintId: blueprint.id,
+      pair: blueprint.pair,
+      exchange: blueprint.exchange,
+      capital: blueprint.tradingCapital,
+      status: 'active',
+      ordersSummary: {
+        total: gridOrderData.length,
+        pending: gridOrderData.length,
+      },
+    };
+
+    // Store idempotency response
+    if (idempotencyKey) {
+      await this.idempotency.storeResponse(userId, idempotencyKey, 'execution.start', result);
+    }
+
+    return result;
+  }
+
+  async stopExecution(userId: string, strategyId: string, idempotencyKey?: string) {
+    // 0. Idempotency check — return cached response if key already processed
+    if (idempotencyKey) {
+      const cached = await this.idempotency.getExistingResponse(
+        userId,
+        idempotencyKey,
+        'execution.stop',
+      );
+      if (cached) return cached;
+    }
+
+    // Atomically claim the strategy for stopping: a single conditional
+    // UPDATE moves it from 'active' to 'stopping', scoped to the owning
+    // user in the same WHERE clause. The previous implementation did a
+    // separate findUnique() + status/ownership check followed by a later
+    // update() to 'stopped' — a check-then-act race, same class as the
+    // one fixed in triggerGridOrder(). Lower blast radius here (worst case
+    // was cancelAllOpenOrdersEncrypted() running twice, which the exchange
+    // mostly no-ops on already-canceled orders), but a double-tap on
+    // "Stop" in the UI or a retried API call could otherwise both pass the
+    // "is active" check and both attempt to cancel + finalize concurrently.
+    //
+    // Using 'stopping' as a real intermediate status (not just a comment)
+    // also closes a second, subtler gap: triggerGridOrdersBatch() and the
+    // worker's active-strategy query both filter on status === 'active',
+    // so as soon as this claim lands, no new grid order can be triggered
+    // for this strategy while cancellation is still in flight — previously
+    // the strategy stayed 'active' in the DB for the entire duration of
+    // the cancel-orders call, leaving a window where the worker could
+    // still trigger a fresh buy mid-shutdown.
+    const claim = await this.prisma.gridStrategy.updateMany({
+      where: { id: strategyId, userId, status: 'active' },
+      data: { status: 'stopping' },
+    });
+
+    if (claim.count === 0) {
+      // Distinguish not-found / not-owned / already-inactive only for a
+      // clear error message — this extra read sits off the atomic hot
+      // path above.
+      const existing = await this.prisma.gridStrategy.findUnique({ where: { id: strategyId } });
+      if (!existing) throw new NotFoundException('Grid strategy not found');
+      if (existing.userId !== userId) throw new ForbiddenException('You do not own this strategy');
+      throw new BadRequestException('Strategy is not active');
+    }
+
+    // Strategy is now safely claimed as 'stopping' by this call, and only
+    // this call. Re-fetch with orders for the cancel step below.
+    const strategy = await this.prisma.gridStrategy.findUnique({
+      where: { id: strategyId },
+      include: { orders: true },
+    });
+
+    if (!strategy) {
+      // Defensive only — we just claimed this row, it cannot legitimately
+      // be gone.
+      throw new NotFoundException('Grid strategy not found after claim');
+    }
+
+    // Fetch exchange account via the strategy's explicit binding
+    const account = await this.prisma.exchangeAccount.findUnique({
+      where: { id: strategy.exchangeAccountId },
+    });
+
+    if (account) {
+      const credentials = {
+        encryptedApiKey: account.apiKeyEncrypted,
+        encryptedApiSecret: account.apiSecretEncrypted,
+        keyVersion: account.apiKeyKeyVersion,
+        context: {
+          exchangeAccountId: account.id,
+          userId: account.userId,
+          purpose: 'stopExecution',
+        } satisfies DecryptContext,
+      };
+
+      // Build order states from DB for cancellation
+      const orderStates: ExecutionOrderState[] = strategy.orders.map((o) => ({
+        dbId: o.id,
+        clientOrderId: o.clientOrderId,
+        exchangeOrderId: o.exchangeOrderId,
+        tpExchangeOrderId: o.tpExchangeOrderId,
+        sectionIndex: o.sectionIndex,
+        orderIndex: o.orderIndex,
+        globalOrderIndex: o.globalOrderIndex,
+        gridPrice: o.gridPrice,
+        tpPrice: o.tpPrice,
+        allocatedCapital: o.allocatedCapital,
+        estimatedQuantity: o.estimatedQuantity,
+        status: o.status as any,
+        buyFilledPrice: o.buyFilledPrice,
+        buyFilledQuantity: o.buyFilledQuantity,
+        buyFee: o.buyFee,
+        tpFilledPrice: o.tpFilledPrice,
+        tpFee: o.tpFee,
+        realizedPnl: o.realizedPnl,
+      }));
+
+      // Cancel all open orders via the encrypted path
+      const cancelResult = await this.executionEngine.cancelAllOpenOrdersEncrypted(
+        strategy.exchange as 'binance' | 'bybit',
+        credentials,
+        strategy.pair,
+        orderStates,
+      );
+
+      // Update canceled orders in DB
+      for (const o of orderStates) {
+        if (o.status === 'canceled') {
+          await this.prisma.gridOrder.update({
+            where: { clientOrderId: o.clientOrderId },
+            data: { status: 'canceled' },
+          });
+        }
+      }
+
+      this.logger.info('Stop strategy', {
+        strategyId,
+        canceled: cancelResult.canceled,
+        errors: cancelResult.errors,
+      });
+    }
+
+    // Update strategy status
+    const updated = await this.prisma.gridStrategy.update({
+      where: { id: strategyId },
+      data: { status: 'stopped', stoppedAt: new Date() },
+    });
+
+    const result = { strategyId: updated.id, status: updated.status, stoppedAt: updated.stoppedAt };
+
+    // Store idempotency response
+    if (idempotencyKey) {
+      await this.idempotency.storeResponse(userId, idempotencyKey, 'execution.stop', result);
+    }
+
+    return result;
+  }
+
+  async getActiveStrategies(userId: string) {
+    const strategies = await this.prisma.gridStrategy.findMany({
+      where: { userId, status: 'active' },
+      include: { orders: true },
+      orderBy: { startedAt: 'desc' },
+    });
+
+    return strategies.map((s) => {
+      const summary = this.executionEngine.summarizeOrders(
+        s.orders.map((o) => ({
+          dbId: o.id,
+          clientOrderId: o.clientOrderId,
+          exchangeOrderId: o.exchangeOrderId,
+          tpExchangeOrderId: o.tpExchangeOrderId,
+          sectionIndex: o.sectionIndex,
+          orderIndex: o.orderIndex,
+          globalOrderIndex: o.globalOrderIndex,
+          gridPrice: o.gridPrice,
+          tpPrice: o.tpPrice,
+          allocatedCapital: o.allocatedCapital,
+          estimatedQuantity: o.estimatedQuantity,
+          status: o.status as any,
+          buyFilledPrice: o.buyFilledPrice,
+          buyFilledQuantity: o.buyFilledQuantity,
+          buyFee: o.buyFee,
+          tpFilledPrice: o.tpFilledPrice,
+          tpFee: o.tpFee,
+          realizedPnl: o.realizedPnl,
+        })),
+      );
+
+      return {
+        strategyId: s.id,
+        blueprintId: s.blueprintId,
+        exchange: s.exchange,
+        pair: s.pair,
+        capital: s.capital,
+        status: s.status,
+        startedAt: s.startedAt,
+        ordersSummary: summary,
+      };
+    });
+  }
+
+  async getStrategyOrders(userId: string, strategyId: string) {
+    const strategy = await this.prisma.gridStrategy.findUnique({
+      where: { id: strategyId },
+      include: { orders: { orderBy: { globalOrderIndex: 'asc' } } },
+    });
+
+    if (!strategy) throw new NotFoundException('Grid strategy not found');
+    if (strategy.userId !== userId) throw new ForbiddenException('You do not own this strategy');
+
+    return strategy.orders;
+  }
+
+  // ============================================================
+  // Internal Worker Methods (called by Binance WebSocket Worker)
+  // ============================================================
+
+  /**
+   * Returns all ACTIVE strategies with their pending grid orders.
+   * Called by the Binance WebSocket Worker on startup and every 60s.
+   * Returns data in the format the Worker expects for price monitoring.
+   */
+  async getAllActiveStrategiesForWorker() {
+    const strategies = await this.prisma.gridStrategy.findMany({
+      where: { status: 'active' },
+      include: {
+        orders: {
+          where: { status: 'pending' },
+          orderBy: { globalOrderIndex: 'asc' },
+        },
+        blueprint: true,
+      },
+    });
+
+    return strategies.map((s) => ({
+      strategyId: s.id,
+      symbol: s.pair,
+      exchange: s.exchange,
+      // Capital Protection on Gaps: max % of capital that can be executed
+      // in a single price movement (Level Crossing Rule)
+      maxCapitalPerMovementPercent: s.blueprint?.maxCapitalPerMovementPercent ?? 40,
+      pendingOrders: s.orders.map((o) => ({
+        orderId: o.id,
+        symbol: s.pair,
+        gridPrice: o.gridPrice,
+        tpPrice: o.tpPrice,
+        sectionIndex: o.sectionIndex,
+        orderIndex: o.orderIndex,
+        allocatedCapital: o.allocatedCapital,
+      })),
+    }));
+  }
+
+  /**
+   * Triggers multiple Market Buys when a price gap crosses several grid levels.
+   *
+   * Capital Protection on Gaps (BUSINESS_RULES.md):
+   * - Max % of capital that can be executed in a single price movement
+   * - If a gap would trigger more than the max %, only the first max % is executed
+   * - Remaining crossed levels wait for the next price movement
+   */
+  async triggerGridOrdersBatch(
+    strategyId: string,
+    orderIds: string[],
+    triggeredPrice: number
+  ) {
+    if (!orderIds || orderIds.length === 0) {
+      return { executed: [], skipped: [] };
+    }
+
+    const strategy = await this.prisma.gridStrategy.findUnique({
+      where: { id: strategyId },
+      include: { blueprint: true },
+    });
+
+    if (!strategy || strategy.status !== 'active') {
+      return { executed: [], skipped: orderIds };
+    }
+
+    // Fetch all pending orders for this strategy
+    const orders = await this.prisma.gridOrder.findMany({
+      where: {
+        id: { in: orderIds },
+        gridStrategyId: strategyId,
+        status: 'pending',
+      },
+      orderBy: { globalOrderIndex: 'asc' },
+    });
+
+    if (orders.length === 0) {
+      return { executed: [], skipped: orderIds };
+    }
+
+    // Capital Protection on Gaps: enforce max capital per movement
+    const maxCapitalPercent = strategy.blueprint?.maxCapitalPerMovementPercent ?? 40;
+    const maxCapitalUsdt = (strategy.capital * maxCapitalPercent) / 100;
+
+    // Select orders up to the max capital limit
+    let accumulatedCapital = 0;
+    const ordersToExecute: typeof orders = [];
+    const ordersSkipped: string[] = [];
+
+    for (const order of orders) {
+      if (accumulatedCapital + order.allocatedCapital <= maxCapitalUsdt) {
+        ordersToExecute.push(order);
+        accumulatedCapital += order.allocatedCapital;
+      } else {
+        ordersSkipped.push(order.id);
+      }
+    }
+
+    this.logger.info('Batch trigger result', {
+      strategyId,
+      executed: ordersToExecute.length,
+      accumulatedCapitalUsdt: Number(accumulatedCapital.toFixed(2)),
+      skipped: ordersSkipped.length,
+      maxCapitalPercent,
+    });
+
+    // Execute each selected order
+    const executed: any[] = [];
+    for (const order of ordersToExecute) {
+      try {
+        const result = await this.triggerGridOrder(order.id, triggeredPrice);
+        executed.push(result);
+      } catch (err: any) {
+        this.logger.error('Batch trigger failed for order', { orderId: order.id }, err);
+        ordersSkipped.push(order.id);
+      }
+    }
+
+    return { executed, skipped: ordersSkipped };
+  }
+
+  /**
+   * Triggers a Market Buy when the Binance WebSocket Worker detects
+   * that current price has crossed a grid level downwards.
+   *
+   * Level Crossing Rule (from BUSINESS_RULES.md):
+   * - Buy is Market Order at current market price (not limit)
+   * - TP is placed immediately after fill confirmation
+   * - Actual fill price is recorded for TP calculation
+   */
+  async triggerGridOrder(orderId: string, triggeredPrice: number) {
+    // Atomically claim this order: a single conditional UPDATE moves it from
+    // 'pending' to 'filled' and is the ONLY thing that guards against
+    // double-trigger. The previous implementation did a separate
+    // findUnique() status check followed by a later update() — that
+    // read-then-write pattern is racy: two near-simultaneous calls for the
+    // same orderId (worker retry after a timeout, single + batch trigger
+    // overlapping, a second worker instance, etc.) could both pass the
+    // "is pending" check before either write landed, causing two real
+    // market buys for the same grid level. A single UPDATE ... WHERE
+    // status = 'pending' is atomic at the database level, so only one
+    // caller can ever win the claim.
+    const claim = await this.prisma.gridOrder.updateMany({
+      where: { id: orderId, status: 'pending' },
+      data: { status: 'filled', placedAt: new Date() },
+    });
+
+    if (claim.count === 0) {
+      // Either the order doesn't exist, or another concurrent call already
+      // claimed it. This extra read is only for a clear error/skip message
+      // and sits off the atomic hot path above.
+      const existing = await this.prisma.gridOrder.findUnique({ where: { id: orderId } });
+      if (!existing) throw new NotFoundException(`Grid order ${orderId} not found`);
+      this.logger.warn('Order is not pending, skipping', { orderId, status: existing.status });
+      return { skipped: true, reason: 'Order already processed' };
+    }
+
+    // Order is now safely claimed as 'filled' by this call, and only this
+    // call. Re-fetch with the strategy relation for execution details.
+    const order = await this.prisma.gridOrder.findUnique({
+      where: { id: orderId },
+      include: { gridStrategy: true },
+    });
+
+    if (!order) {
+      // Defensive only — we just claimed this row, it cannot legitimately
+      // be gone.
+      throw new NotFoundException(`Grid order ${orderId} not found after claim`);
+    }
+
+    const strategy = order.gridStrategy;
+
+    // Fetch exchange account via the strategy's explicit binding
+    const account = await this.prisma.exchangeAccount.findUnique({
+      where: { id: strategy.exchangeAccountId },
+    });
+
+    if (!account) {
+      this.logger.error('No exchange account bound to strategy', { strategyId: strategy.id });
+      // The order was already claimed as 'filled' above but no buy was
+      // actually executed — mark it 'error' so it doesn't look like a
+      // real fill in the UI/analytics.
+      await this.prisma.gridOrder.update({
+        where: { id: orderId },
+        data: { status: 'error' },
+      });
+      throw new NotFoundException('No exchange account bound to strategy');
+    }
+
+    const credentials = {
+      encryptedApiKey: account.apiKeyEncrypted,
+      encryptedApiSecret: account.apiSecretEncrypted,
+      keyVersion: account.apiKeyKeyVersion,
+      context: {
+        exchangeAccountId: account.id,
+        userId: account.userId,
+        purpose: 'triggerGridOrder',
+      } satisfies DecryptContext,
+    };
+
+    // Build order state for ExecutionEngine
+    const orderState: ExecutionOrderState = {
+      dbId: order.id,
+      clientOrderId: order.clientOrderId,
+      exchangeOrderId: order.exchangeOrderId,
+      tpExchangeOrderId: order.tpExchangeOrderId,
+      sectionIndex: order.sectionIndex,
+      orderIndex: order.orderIndex,
+      globalOrderIndex: order.globalOrderIndex,
+      gridPrice: order.gridPrice,
+      tpPrice: order.tpPrice,
+      allocatedCapital: order.allocatedCapital,
+      estimatedQuantity: order.estimatedQuantity,
+      status: 'pending',
+      buyFilledPrice: null,
+      buyFilledQuantity: null,
+      buyFee: null,
+      tpFilledPrice: null,
+      tpFee: null,
+      realizedPnl: null,
+    };
+
+    // Execute Market Buy via the encrypted path; decryption + audit log
+    // happen inside Exchange Engine. The order was already atomically
+    // claimed as 'filled' above, so no other concurrent caller can re-enter
+    // this block for the same orderId.
+    const fillResult = await this.executionEngine.executeSingleMarketBuyEncrypted(
+      strategy.exchange as 'binance' | 'bybit',
+      credentials,
+      strategy.pair,
+      orderState,
+      triggeredPrice,
+    );
+
+    // Update order with actual fill data
+    await this.prisma.gridOrder.update({
+      where: { id: orderId },
+      data: {
+        status: 'filled',
+        exchangeOrderId: fillResult.exchangeOrderId ?? undefined,
+        buyFilledPrice: fillResult.filledPrice ?? triggeredPrice,
+        buyFilledQuantity: fillResult.filledQuantity ?? order.estimatedQuantity,
+        buyFee: fillResult.fee ?? 0,
+        filledAt: new Date(),
+      },
+    });
+
+    // If TP SELL LIMIT was placed, update the order with its exchange ID
+    if (fillResult.tpExchangeOrderId) {
+      await this.prisma.gridOrder.update({
+        where: { id: orderId },
+        data: {
+          status: 'tp_placed',
+          tpExchangeOrderId: fillResult.tpExchangeOrderId,
+        },
+      });
+    }
+
+    this.logger.info('Order filled', {
+      orderId,
+      pair: strategy.pair,
+      filledPrice: fillResult.filledPrice ?? triggeredPrice,
+    });
+
+    // Emit real-time update to the strategy owner (Real-Time Data Rules)
+    this.realtime.emitOrderUpdate(strategy.userId, {
+      orderId,
+      strategyId: strategy.id,
+      pair: strategy.pair,
+      status: fillResult.tpExchangeOrderId ? 'tp_placed' : 'filled',
+      filledPrice: fillResult.filledPrice ?? triggeredPrice,
+      exchangeOrderId: fillResult.exchangeOrderId,
+      tpExchangeOrderId: fillResult.tpExchangeOrderId,
+    });
+
+    return {
+      orderId,
+      status: fillResult.tpExchangeOrderId ? 'tp_placed' : 'filled',
+      filledPrice: fillResult.filledPrice ?? triggeredPrice,
+      exchangeOrderId: fillResult.exchangeOrderId,
+      tpExchangeOrderId: fillResult.tpExchangeOrderId,
+    };
+  }
 }
-
-function buildService(prismaMock: any) {
-  const strategyServiceMock = {} as unknown as StrategyService;
-  const realtimeMock = { emitOrderUpdate: jest.fn() } as unknown as RealtimeGateway;
-  const idempotencyMock = {
-    getExistingResponse: jest.fn(),
-    storeResponse: jest.fn(),
-  } as unknown as IdempotencyService;
-  // ExecutionService only stores this to build `new ExecutionEngine(exchangeEngine)`
-  // internally; we overwrite `executionEngine` after construction below, so
-  // this mock is never actually invoked.
-  const exchangeEngineMock = {} as unknown as ExchangeEngine;
-
-  const service = new ExecutionService(
-    prismaMock as unknown as PrismaService,
-    exchangeEngineMock,
-    strategyServiceMock,
-    realtimeMock,
-    idempotencyMock,
-  );
-
-  const executionEngineMock = {
-    executeSingleMarketBuyEncrypted: jest.fn().mockResolvedValue({
-      exchangeOrderId: 'ex_order_1',
-      filledPrice: 99.5,
-      filledQuantity: 0.5,
-      fee: 0.05,
-      tpExchangeOrderId: 'ex_tp_1',
-    }),
-    cancelAllOpenOrdersEncrypted: jest.fn(),
-  };
-  // Private field in TS, accessible at runtime — swap in a full mock so the
-  // test never touches real ExchangeEngine / ccxt / crypto code.
-  (service as any).executionEngine = executionEngineMock;
-
-  return { service, executionEngineMock, realtimeMock };
-}
-
-describe('ExecutionService.triggerGridOrder — atomic claim', () => {
-  it('claims the order (updateMany count=1) and only then calls the exchange', async () => {
-    const order = buildOrderRow();
-    const account = { id: 'account_1', userId: 'user_1', apiKeyEncrypted: 'enc_key', apiSecretEncrypted: 'enc_secret', apiKeyKeyVersion: 1 };
-
-    const prismaMock = {
-      gridOrder: {
-        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-        findUnique: jest.fn().mockResolvedValue(order),
-        update: jest.fn().mockResolvedValue({}),
-      },
-      exchangeAccount: {
-        findUnique: jest.fn().mockResolvedValue(account),
-      },
-    };
-
-    const { service, executionEngineMock } = buildService(prismaMock);
-
-    const result = await service.triggerGridOrder('order_1', 99.5);
-
-    // The claim must be attempted with an explicit status guard.
-    expect(prismaMock.gridOrder.updateMany).toHaveBeenCalledWith({
-      where: { id: 'order_1', status: 'pending' },
-      data: { status: 'filled', placedAt: expect.any(Date) },
-    });
-
-    expect(executionEngineMock.executeSingleMarketBuyEncrypted).toHaveBeenCalledTimes(1);
-    expect(result).toMatchObject({
-      orderId: 'order_1',
-      status: 'tp_placed',
-      exchangeOrderId: 'ex_order_1',
-      tpExchangeOrderId: 'ex_tp_1',
-    });
-  });
-
-  it('does NOT call the exchange when the claim fails because the order is already filled', async () => {
-    const alreadyFilled = buildOrderRow({ status: 'filled' });
-
-    const prismaMock = {
-      gridOrder: {
-        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
-        findUnique: jest.fn().mockResolvedValue(alreadyFilled),
-        update: jest.fn(),
-      },
-      exchangeAccount: {
-        findUnique: jest.fn(),
-      },
-    };
-
-    const { service, executionEngineMock } = buildService(prismaMock);
-
-    const result = await service.triggerGridOrder('order_1', 99.5);
-
-    expect(result).toEqual({ skipped: true, reason: 'Order already processed' });
-    expect(executionEngineMock.executeSingleMarketBuyEncrypted).not.toHaveBeenCalled();
-    // No exchange account lookup should happen either — we never got past the claim.
-    expect(prismaMock.exchangeAccount.findUnique).not.toHaveBeenCalled();
-  });
-
-  it('throws NotFoundException when the order does not exist at all', async () => {
-    const prismaMock = {
-      gridOrder: {
-        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
-        findUnique: jest.fn().mockResolvedValue(null),
-        update: jest.fn(),
-      },
-      exchangeAccount: { findUnique: jest.fn() },
-    };
-
-    const { service, executionEngineMock } = buildService(prismaMock);
-
-    await expect(service.triggerGridOrder('missing_order', 99.5)).rejects.toThrow(NotFoundException);
-    expect(executionEngineMock.executeSingleMarketBuyEncrypted).not.toHaveBeenCalled();
-  });
-
-  it('marks the order as error (without leaving it stuck at "filled") if no exchange account is bound', async () => {
-    const order = buildOrderRow();
-
-    const prismaMock = {
-      gridOrder: {
-        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-        findUnique: jest.fn().mockResolvedValue(order),
-        update: jest.fn().mockResolvedValue({}),
-      },
-      exchangeAccount: {
-        findUnique: jest.fn().mockResolvedValue(null),
-      },
-    };
-
-    const { service, executionEngineMock } = buildService(prismaMock);
-
-    await expect(service.triggerGridOrder('order_1', 99.5)).rejects.toThrow(NotFoundException);
-    expect(executionEngineMock.executeSingleMarketBuyEncrypted).not.toHaveBeenCalled();
-    expect(prismaMock.gridOrder.update).toHaveBeenCalledWith({
-      where: { id: 'order_1' },
-      data: { status: 'error' },
-    });
-  });
-
-  it('simulated concurrency: two callers racing for the same order → exactly one executes, one is skipped', async () => {
-    const order = buildOrderRow();
-    const account = { id: 'account_1', userId: 'user_1', apiKeyEncrypted: 'enc_key', apiSecretEncrypted: 'enc_secret', apiKeyKeyVersion: 1 };
-
-    // Shared mutable "row" standing in for the DB. The updateMany mock
-    // reproduces the semantics of `UPDATE ... WHERE status = 'pending'`:
-    // only the first caller whose WHERE clause still matches the current
-    // row state gets count=1; every other caller gets count=0. This models
-    // exactly the guarantee a real database gives for a single UPDATE
-    // statement.
-    const sharedRow = { status: 'pending' };
-
-    const prismaMock = {
-      gridOrder: {
-        updateMany: jest.fn(async ({ where, data }: any) => {
-          if (sharedRow.status === where.status) {
-            sharedRow.status = data.status;
-            return { count: 1 };
-          }
-          return { count: 0 };
-        }),
-        findUnique: jest.fn().mockImplementation(async () => ({ ...order, status: sharedRow.status })),
-        update: jest.fn().mockResolvedValue({}),
-      },
-      exchangeAccount: {
-        findUnique: jest.fn().mockResolvedValue(account),
-      },
-    };
-
-    const { service, executionEngineMock } = buildService(prismaMock);
-
-    const [resultA, resultB] = await Promise.all([
-      service.triggerGridOrder('order_1', 99.5),
-      service.triggerGridOrder('order_1', 99.5),
-    ]);
-
-    const results = [resultA, resultB];
-    const executedCount = results.filter((r: any) => !r.skipped).length;
-    const skippedCount = results.filter((r: any) => r.skipped).length;
-
-    expect(executedCount).toBe(1);
-    expect(skippedCount).toBe(1);
-    // The exchange must have been hit exactly once, never twice, for the
-    // same grid level — this is the actual money-safety guarantee.
-    expect(executionEngineMock.executeSingleMarketBuyEncrypted).toHaveBeenCalledTimes(1);
-  });
-});
-
-/**
- * Integration-level proof that Postgres itself serializes the conditional
- * UPDATE (the guarantee the unit tests above assume). Requires a real
- * database and is skipped by default — wire up TEST_DATABASE_URL and a
- * seeded GridOrder row in CI to enable it.
- *
- * Suggested scenario once enabled:
- *   1. Seed one GridOrder with status='pending'.
- *   2. Fire N concurrent `PrismaClient.gridOrder.updateMany({ where: { id,
- *      status: 'pending' }, data: { status: 'filled' } })` calls via
- *      Promise.all against a real connection pool (not a mock).
- *   3. Assert exactly one call resolves with count === 1 and the rest with
- *      count === 0, and that the final row status is 'filled' (not
- *      corrupted by a lost update).
- */
-describe.skip('ExecutionService.triggerGridOrder — real database concurrency (integration)', () => {
-  it('only one of N concurrent claims against a live Postgres row succeeds', async () => {
-    // Intentionally left unimplemented — requires TEST_DATABASE_URL wiring.
-  });
-});

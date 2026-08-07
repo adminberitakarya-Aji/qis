@@ -120,7 +120,7 @@ model GridStrategy {
   exchange          String // 'binance' | 'bybit'
   pair              String // e.g. 'BTC/USDT'
   capital           Float // Total trading capital in USDT
-  status            String    @default("active") // 'active' | 'stopped' | 'completed' | 'error'
+  status            String    @default("active") // 'active' | 'stopping' | 'stopped' | 'completed' | 'error' — 'stopping' is a transient claim state set atomically by stopExecution() while orders are being canceled on the exchange
   startedAt         DateTime  @default(now())
   stoppedAt         DateTime?
   createdAt         DateTime  @default(now())
