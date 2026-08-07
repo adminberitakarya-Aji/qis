@@ -23,8 +23,11 @@ export class StrategyController {
   }
 
   @Get('blueprint/:id')
-  async getBlueprint(@Param('id') id: string) {
-    const data = await this.strategyService.getBlueprint(id);
+  async getBlueprint(
+    @CurrentUser() user: { id: string },
+    @Param('id') id: string,
+  ) {
+    const data = await this.strategyService.getBlueprint(user.id, id);
     return {
       success: true,
       message: 'Strategy Blueprint fetched successfully',
@@ -33,8 +36,11 @@ export class StrategyController {
   }
 
   @Post('simulate')
-  async simulateStrategy(@Body('blueprintId') blueprintId: string) {
-    const data = await this.strategyService.simulateStrategy(blueprintId);
+  async simulateStrategy(
+    @CurrentUser() user: { id: string },
+    @Body('blueprintId') blueprintId: string,
+  ) {
+    const data = await this.strategyService.simulateStrategy(user.id, blueprintId);
     return {
       success: true,
       message: 'Strategy simulation completed successfully',

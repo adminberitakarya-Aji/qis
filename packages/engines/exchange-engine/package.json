@@ -20,7 +20,7 @@
   "dependencies": {
     "@qis/core": "workspace:*",
     "@qis/shared": "workspace:*",
-    "ccxt": "^4.4.45"
+    "@qis/providers-exchange": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

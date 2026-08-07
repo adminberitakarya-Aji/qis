@@ -4,9 +4,11 @@
 // - Market Technical Analysis (RSI, BB Width, ATR, Volatility)
 // - Top 5 Pair Recommendations with Confidence Score & Explainable AI Reasoning
 // - Section & Grid Parameter Recommendations
+// - LLM-based reasoning enrichment via @qis/providers-ai (OpenAI/Anthropic/Gemini)
 // AI never executes trades or modifies user capital/allocation.
 
 import { MarketEngine } from '@qis/market-engine';
+import { createAiProvider, type AiProvider } from '@qis/providers-ai';
 
 export interface PairRecommendation {
   rank: number;
@@ -38,9 +40,12 @@ export interface AiStrategyRecommendation {
 
 export class AiEngine {
   private aiServiceUrl: string;
+  private llmProvider: AiProvider | null;
 
   constructor(private marketEngine: MarketEngine = new MarketEngine()) {
     this.aiServiceUrl = process.env.AI_SERVICE_URL || 'http://localhost:8000';
+    // Detect LLM provider from env (OPENAI_API_KEY > ANTHROPIC_API_KEY > GEMINI_API_KEY)
+    this.llmProvider = createAiProvider();
   }
 
   /**
@@ -170,7 +175,7 @@ export class AiEngine {
       });
     }
 
-    return {
+    const recommendation: AiStrategyRecommendation = {
       pair: symbol,
       confidenceScore: 85,
       overallReasoning: `AI Strategy generated for ${symbol} across ${sectionCount} sections based on 24h volatility profile (${volatility}%).`,
@@ -179,5 +184,63 @@ export class AiEngine {
       maxCapitalPerMovementPercent: 40,
       maxDrawdownAlertPercent: 15,
     };
+
+    // Enrich reasoning with LLM if a provider is configured
+    return this.enrichWithLlm(recommendation, { exchange, symbol, sectionCount, volatility });
+  }
+
+  /**
+   * Enriches a strategy recommendation with LLM-generated reasoning.
+   * Falls back to the original recommendation if no LLM provider is configured
+   * or if the LLM call fails.
+   */
+  private async enrichWithLlm(
+    recommendation: AiStrategyRecommendation,
+    context: {
+      exchange: string;
+      symbol: string;
+      sectionCount: number;
+      volatility: number;
+    }
+  ): Promise<AiStrategyRecommendation> {
+    if (!this.llmProvider) {
+      return recommendation;
+    }
+
+    try {
+      const systemPrompt = `You are Qis, an AI-Assisted Grid Trading Strategy Planner.
+Your role is to ANALYZE and RECOMMEND, never to execute trades.
+Always provide explainable reasoning for your recommendations.
+Never modify user capital, allocation, or risk preferences.`;
+
+      const userPrompt = `Generate an explainable grid trading strategy for:
+- Exchange: ${context.exchange}
+- Pair: ${context.symbol}
+- Section Count: ${context.sectionCount}
+- 24h Volatility: ${context.volatility}%
+
+Current recommendation:
+${JSON.stringify(recommendation, null, 2)}
+
+Provide a concise, professional reasoning summary (max 200 words) explaining:
+1. Why this pair is suitable for grid trading
+2. Why the section structure is appropriate
+3. Risk considerations for the trader`;
+
+      const response = await this.llmProvider.generate({
+        systemPrompt,
+        userPrompt,
+        temperature: 0.5,
+        maxTokens: 500,
+      });
+
+      return {
+        ...recommendation,
+        overallReasoning: response.text.trim(),
+      };
+    } catch (error: any) {
+      console.warn(`[AiEngine] LLM enrichment failed (${error.message}). Using heuristic reasoning.`);
+      return recommendation;
+    }
   }
 }

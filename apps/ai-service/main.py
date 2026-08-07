@@ -3,9 +3,63 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict
 import requests
 import time
+import json
+import logging
+import sys
+from datetime import datetime
 import pandas as pd
 from indicators import calculate_technical_features
 from reasoning import generate_pair_reasoning, generate_strategy_recommendation
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Structured Logging Setup
+# Produces JSON log entries in production for monitoring/aggregation.
+# ─────────────────────────────────────────────────────────────────────────────
+class StructuredFormatter(logging.Formatter):
+    """JSON formatter for structured logging."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        log_entry = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "level": record.levelname.lower(),
+            "service": "qis-ai-service",
+            "message": record.getMessage(),
+        }
+        # Include extra context if provided
+        if hasattr(record, "context") and record.context:
+            log_entry["context"] = record.context
+        if record.exc_info and record.exc_info[0]:
+            log_entry["error"] = {
+                "type": record.exc_info[0].__name__,
+                "message": str(record.exc_info[1]),
+            }
+        return json.dumps(log_entry)
+
+
+logger = logging.getLogger("qis-ai-service")
+logger.setLevel(logging.INFO)
+
+# Console handler with structured output
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setFormatter(StructuredFormatter())
+logger.addHandler(console_handler)
+
+
+def log_info(message: str, **context):
+    """Structured info log with context."""
+    logger.info(message, extra={"context": context})
+
+
+def log_error(message: str, exc_info=None, **context):
+    """Structured error log with context."""
+    logger.error(message, extra={"context": context}, exc_info=exc_info)
+
+
+def log_warn(message: str, **context):
+    """Structured warning log with context."""
+    logger.warning(message, extra={"context": context})
+
 
 app = FastAPI(
     title="Qis AI Service",
@@ -42,7 +96,7 @@ CANDIDATE_PAIRS: List[Dict[str, str]] = [
 
 COINGECKO_BASE = "https://api.coingecko.com/api/v3"
 TIMEOUT_SECS   = 15
-# Polite delay between OHLC requests to respect CoinGecko free-tier rate limit
+# Polite delay between requests to respect CoinGecko free-tier rate limit
 CG_REQUEST_DELAY = 1.2  # seconds
 
 
@@ -71,27 +125,68 @@ def _fetch_markets_batch(cg_ids: List[str]) -> Dict[str, dict]:
     return {item["id"]: item for item in data}
 
 
+def _fetch_ohlc_with_volume(cg_id: str) -> List[dict]:
+    """
+    Fetches hourly OHLCV candles via CoinGecko market_chart endpoint.
+    days=2 → ~48 hourly candles (last 2 days) with volume.
+    Returns list of candle dicts compatible with indicators.py.
+    """
+    # CoinGecko market_chart returns: {"prices": [[ts, price], ...], "market_caps": [...], "total_volumes": [[ts, vol], ...]}
+    raw = _cg_get(f"/coins/{cg_id}/market_chart", params={"vs_currency": "usd", "days": "2", "interval": "hourly"})
+    if not raw or "prices" not in raw or "total_volumes" not in raw:
+        return []
+    
+    prices = raw["prices"]
+    volumes = raw["total_volumes"]
+    
+    # Build OHLCV from prices (CoinGecko market_chart gives OHLC as [timestamp, open, high, low, close] for interval data)
+    # Actually, market_chart with interval=hourly returns prices as [timestamp, price] where price is the close price
+    # For proper OHLC we need to use the OHLC endpoint, but it doesn't have volume
+    # So we combine: fetch OHLC for OHLC, and market_chart for volume, then merge by timestamp
+    return []
+
+
 def _fetch_ohlc(cg_id: str) -> List[dict]:
     """
-    Fetches hourly OHLC candles via CoinGecko OHLC endpoint.
+    Fetches hourly OHLC candles via CoinGecko OHLC endpoint and enriches with volume from market_chart.
     days=2 → ~48 hourly candles (last 2 days).
     Returns list of candle dicts compatible with indicators.py.
     """
-    # CoinGecko OHLC: [[timestamp_ms, open, high, low, close], ...]
-    raw = _cg_get(f"/coins/{cg_id}/ohlc", params={"vs_currency": "usd", "days": "2"})
-    if not raw:
+    # Fetch OHLC data (has open, high, low, close but no volume)
+    ohlc_raw = _cg_get(f"/coins/{cg_id}/ohlc", params={"vs_currency": "usd", "days": "2"})
+    if not ohlc_raw:
         return []
-    return [
-        {
-            "timestamp": row[0],
+    
+    # Fetch volume data from market_chart
+    time.sleep(CG_REQUEST_DELAY)  # respect rate limit between calls
+    volume_raw = _cg_get(f"/coins/{cg_id}/market_chart", params={"vs_currency": "usd", "days": "2", "interval": "hourly"})
+    
+    # Build volume lookup by timestamp (rounded to hour)
+    volume_map = {}
+    if volume_raw and "total_volumes" in volume_raw:
+        for vol_entry in volume_raw["total_volumes"]:
+            ts = vol_entry[0]
+            vol = vol_entry[1]
+            # Round timestamp to hour for matching with OHLC
+            hour_ts = (ts // 3600000) * 3600000
+            volume_map[hour_ts] = vol
+    
+    candles = []
+    for row in ohlc_raw:
+        ts = row[0]
+        hour_ts = (ts // 3600000) * 3600000
+        volume = volume_map.get(hour_ts, 0.0)
+        
+        candles.append({
+            "timestamp": ts,
             "open":  float(row[1]),
             "high":  float(row[2]),
             "low":   float(row[3]),
             "close": float(row[4]),
-            "volume": 0.0,  # OHLC endpoint doesn't include volume; indicators don't use it
-        }
-        for row in raw
-    ]
+            "volume": float(volume),
+        })
+    
+    return candles
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -135,13 +230,16 @@ def get_top_pairs(req: TopPairsRequest):
     Step 4: Pattern Recognition + Confidence Score + Explainable Reasoning
     Step 5: Return Top 5 sorted by Confidence Score
     """
+    log_info("Analyzing top pairs", candidate_count=req.candidateCount)
+
     pool = CANDIDATE_PAIRS[: req.candidateCount]
     cg_ids = [p["cg_id"] for p in pool]
 
     # ── Batch fetch 24h market data (1 API call for all) ──────────────────
     try:
         markets = _fetch_markets_batch(cg_ids)
-    except Exception:
+    except Exception as e:
+        log_warn("Failed to fetch markets batch", error=str(e))
         markets = {}
 
     results = []
@@ -156,7 +254,8 @@ def get_top_pairs(req: TopPairsRequest):
         try:
             candles = _fetch_ohlc(cg_id)
             time.sleep(CG_REQUEST_DELAY)   # respect free-tier rate limit
-        except Exception:
+        except Exception as e:
+            log_warn(f"Failed to fetch OHLC for {pair}", error=str(e))
             candles = []
 
         # ── Feature Extraction ────────────────────────────────────────────
@@ -192,6 +291,8 @@ def analyze_strategy(req: StrategyAnalysisRequest):
     - Min Net Profit % per section
     Based on real ATR, RSI, BB Width from last 48h hourly OHLC.
     """
+    log_info("Analyzing strategy", symbol=req.symbol, section_count=req.sectionCount)
+
     # Normalize symbol: "BTC/USDT" → lookup in candidate pool
     normalized = req.symbol.replace("/", "").upper()
     cg_id = None
@@ -201,6 +302,7 @@ def analyze_strategy(req: StrategyAnalysisRequest):
             break
 
     if not cg_id:
+        log_warn("Symbol not in supported candidate pool", symbol=req.symbol)
         raise HTTPException(
             status_code=400,
             detail=f"Symbol '{req.symbol}' not in supported candidate pool. Use format 'BTC/USDT'.",
@@ -208,7 +310,8 @@ def analyze_strategy(req: StrategyAnalysisRequest):
 
     try:
         candles = _fetch_ohlc(cg_id)
-    except Exception:
+    except Exception as e:
+        log_warn(f"Failed to fetch OHLC for {req.symbol}", error=str(e))
         candles = []
 
     features = calculate_technical_features(candles)

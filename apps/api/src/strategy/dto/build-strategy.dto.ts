@@ -25,4 +25,9 @@ export class BuildStrategyDto {
   @IsString()
   @IsIn(['low', 'medium', 'high'])
   riskPreference?: 'low' | 'medium' | 'high';
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['pause', 'notify', 'hard_stop'])
+  floorAction?: 'pause' | 'notify' | 'hard_stop';
 }

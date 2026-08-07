@@ -1,9 +1,13 @@
 import { Body, Controller, HttpCode, HttpStatus, Post } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 
 @Controller('auth')
+// Strict rate limiting on auth endpoints to prevent brute-force attacks.
+// 5 attempts per minute per IP for register/login/refresh.
+@Throttle({ default: { limit: 5, ttl: 60_000 } })
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 

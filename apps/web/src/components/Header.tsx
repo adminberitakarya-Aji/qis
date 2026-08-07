@@ -6,22 +6,30 @@ import {
   ChevronDown,
   Activity,
   Bell,
-  User,
   ShieldCheck,
+  LogOut,
 } from 'lucide-react';
+import type { User as AuthUser } from '@/lib/auth';
 
 interface HeaderProps {
   title: string;
   selectedExchange: 'binance' | 'bybit';
   setSelectedExchange: (exchange: 'binance' | 'bybit') => void;
+  realtimeStatus?: 'connecting' | 'connected' | 'disconnected';
+  user?: AuthUser | null;
+  onLogout?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   title,
   selectedExchange,
   setSelectedExchange,
+  realtimeStatus = 'disconnected',
+  user,
+  onLogout,
 }) => {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
 
   return (
     <header className="h-16 bg-pitch-bg border-b border-pitch-border px-8 flex items-center justify-between sticky top-0 z-20">
@@ -31,6 +39,21 @@ export const Header: React.FC<HeaderProps> = ({
         <div className="flex items-center gap-2 px-2.5 py-1 rounded-full bg-emerald-profit/10 border border-emerald-profit/20 text-emerald-profit text-xs font-semibold">
           <Activity className="w-3.5 h-3.5 animate-pulse" />
           <span>Live Execution Engine</span>
+        </div>
+        {/* Realtime Connection Status */}
+        <div className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-mono font-bold ${
+          realtimeStatus === 'connected'
+            ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400'
+            : realtimeStatus === 'connecting'
+            ? 'bg-amber-400/10 border border-amber-400/30 text-amber-400'
+            : 'bg-red-500/10 border border-red-500/30 text-red-400'
+        }`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${
+            realtimeStatus === 'connected' ? 'bg-emerald-400' :
+            realtimeStatus === 'connecting' ? 'bg-amber-400 animate-pulse' : 'bg-red-400'
+          }`} />
+          {realtimeStatus === 'connected' ? 'WS Live' :
+           realtimeStatus === 'connecting' ? 'Connecting...' : 'WS Off'}
         </div>
       </div>
 
@@ -102,14 +125,46 @@ export const Header: React.FC<HeaderProps> = ({
           <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-neon-purple"></span>
         </button>
 
-        <div className="flex items-center gap-2 pl-2 border-l border-pitch-border">
-          <div className="w-8 h-8 rounded-xl bg-pitch-surface border border-pitch-border flex items-center justify-center text-zinc-300 font-bold text-xs">
-            <User className="w-4 h-4 text-electric-blue" />
-          </div>
-          <div className="text-xs">
-            <div className="font-semibold text-zinc-200">Trader Admin</div>
-            <div className="text-[10px] text-zinc-500">Verified User</div>
-          </div>
+        {/* User Profile with Logout */}
+        <div className="relative">
+          <button
+            onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
+            className="flex items-center gap-2 pl-2 border-l border-pitch-border hover:bg-pitch-surface rounded-xl py-1.5 pr-2 transition-colors"
+          >
+            <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-electric-blue/30 to-neon-purple/30 border border-electric-blue/20 flex items-center justify-center text-zinc-200 font-bold text-xs">
+              {user?.name?.[0]?.toUpperCase() ?? user?.email?.[0]?.toUpperCase() ?? 'U'}
+            </div>
+            <div className="text-left">
+              <div className="font-semibold text-zinc-200 text-xs">
+                {user?.name || user?.email || 'User'}
+              </div>
+              <div className="text-[10px] text-zinc-500">Signed In</div>
+            </div>
+            <ChevronDown className="w-3.5 h-3.5 text-zinc-500" />
+          </button>
+
+          {isUserMenuOpen && (
+            <div className="absolute right-0 mt-2 w-48 bg-pitch-card border border-pitch-border rounded-xl shadow-xl z-50 p-1">
+              <div className="px-3 py-2.5 border-b border-pitch-border mb-1">
+                <div className="text-xs font-semibold text-zinc-200 truncate">
+                  {user?.name || 'User'}
+                </div>
+                <div className="text-[10px] text-zinc-500 truncate">
+                  {user?.email || ''}
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setIsUserMenuOpen(false);
+                  onLogout?.();
+                }}
+                className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium rounded-lg text-red-400 hover:bg-red-500/10 transition-colors"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                Sign Out
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </header>

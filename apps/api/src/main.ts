@@ -1,6 +1,9 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
+import { createServiceLogger } from '@qis/logger';
+
+const logger = createServiceLogger('qis-api');
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -21,7 +24,7 @@ async function bootstrap() {
 
   const port = process.env.PORT ?? 4000;
   await app.listen(port);
-  console.log(`Qis API running on http://localhost:${port}/api/v1`);
+  logger.info('Qis API running', { url: `http://localhost:${port}/api/v1` });
 }
 
 bootstrap();

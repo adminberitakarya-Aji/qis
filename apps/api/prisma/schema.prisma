@@ -24,10 +24,59 @@ model User {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  exchangeAccounts ExchangeAccount[]
-  refreshTokens    RefreshToken[]
-  gridStrategies   GridStrategy[]
-  blueprints       StrategyBlueprint[]
+  exchangeAccounts     ExchangeAccount[]
+  refreshTokens        RefreshToken[]
+  gridStrategies       GridStrategy[]
+  blueprints           StrategyBlueprint[]
+  notificationConfig   NotificationConfig?
+}
+
+// ============================================================
+// Notification Config
+// ============================================================
+
+model NotificationConfig {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+
+  // Telegram
+  telegramEnabled   Boolean  @default(false)
+  telegramBotToken  String?  // Encrypted
+  telegramChatId    String?
+
+  // Discord
+  discordEnabled    Boolean  @default(false)
+  discordWebhookUrl String?  // Encrypted
+
+  // Email
+  emailEnabled      Boolean  @default(false)
+  emailAddress      String?
+  emailSmtpHost     String?
+  emailSmtpPort     Int?
+  emailSmtpUser     String?
+  emailSmtpPass     String?  // Encrypted
+
+  // Generic Webhook
+  webhookEnabled    Boolean  @default(false)
+  webhookUrl        String?  // Encrypted
+  webhookHeaders    Json?    // Custom headers for webhook
+
+  // Event Filters (which events to notify)
+  notifyOrderFilled     Boolean  @default(true)
+  notifyOrderError      Boolean  @default(true)
+  notifyGridCompleted   Boolean  @default(true)
+  notifyGridStopped     Boolean  @default(true)
+  notifyCapitalFloorHit Boolean  @default(true)
+  notifyDrawdownAlert   Boolean  @default(true)
+  notifyTpHit           Boolean  @default(false)
+  notifyDailySummary    Boolean  @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 // ============================================================
@@ -41,7 +90,7 @@ model StrategyBlueprint {
   pair                         String // e.g. 'BTC/USDT'
   tradingCapital               Float
   sectionCount                 Int
-  sectionsJson                 String // Serialized GridSection[]
+  sectionsJson                 Json // GridSection[] (PostgreSQL JSONB)
   capitalProtectionFloor       Float
   floorAction                  String   @default("notify")
   maxCapitalPerMovementPercent Float    @default(40.0)
@@ -56,6 +105,7 @@ model StrategyBlueprint {
 
   @@index([userId])
   @@index([expiresAt])
+  @@index([userId, expiresAt]) // Composite: non-expired blueprints by user
 }
 
 // ============================================================
@@ -84,6 +134,7 @@ model GridStrategy {
   @@index([userId])
   @@index([status])
   @@index([exchangeAccountId])
+  @@index([userId, status]) // Composite: active strategies by user
 }
 
 // ============================================================
@@ -122,6 +173,7 @@ model GridOrder {
   @@index([gridStrategyId])
   @@index([status])
   @@index([clientOrderId])
+  @@index([gridStrategyId, status]) // Composite: most common query - orders by strategy + status filter
 }
 
 // ============================================================
@@ -149,6 +201,7 @@ model ExchangeAccount {
 
   @@unique([userId, exchange, label])
   @@index([userId])
+  @@index([userId, isActive]) // Composite: active exchange accounts by user
 }
 
 // ============================================================
@@ -166,4 +219,27 @@ model RefreshToken {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+  @@index([userId, revoked, expiresAt]) // Composite: valid tokens by user
+}
+
+// ============================================================
+// Idempotency Key
+// Per BUSINESS_RULES_ADDENDUM.md (Idempotency Rules):
+// - Every state-changing API request must accept an Idempotency Key
+// - Backend stores the key with the resulting state change
+// - Returns the original result if the same key is received again
+// ============================================================
+
+model IdempotencyKey {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  userId    String
+  endpoint  String
+  response  Json
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+
+  @@index([userId])
+  @@index([key])
+  @@index([userId, endpoint, key]) // Composite: idempotency check by user + endpoint
 }

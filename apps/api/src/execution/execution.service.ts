@@ -3,7 +3,6 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
-  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
@@ -14,10 +13,13 @@ import { ExchangeEngine, type DecryptContext } from '@qis/exchange-engine';
 import { ExecutionEngine, type ExecutionOrderState } from '@qis/execution-engine';
 import { GridEngine } from '@qis/grid-engine';
 import type { Blueprint } from '@qis/shared';
+import { RealtimeGateway } from '../realtime/realtime.gateway';
+import { IdempotencyService } from '../idempotency/idempotency.service';
+import { createServiceLogger } from '@qis/logger';
 
 @Injectable()
 export class ExecutionService {
-  private readonly logger = new Logger(ExecutionService.name);
+  private readonly logger = createServiceLogger('qis-api:execution');
   private executionEngine: ExecutionEngine;
   private gridEngine = new GridEngine();
 
@@ -25,6 +27,8 @@ export class ExecutionService {
     private readonly prisma: PrismaService,
     @Inject(EXCHANGE_ENGINE) exchangeEngine: ExchangeEngine,
     private readonly strategyService: StrategyService,
+    private readonly realtime: RealtimeGateway,
+    private readonly idempotency: IdempotencyService,
   ) {
     // Reuse the shared Exchange Engine singleton so that all decryption stays
     // inside the same Master Key boundary. Execution Engine itself never
@@ -32,9 +36,19 @@ export class ExecutionService {
     this.executionEngine = new ExecutionEngine(exchangeEngine);
   }
 
-  async startExecution(userId: string, dto: StartExecutionDto) {
-    // 1. Validate Blueprint exists and is not expired
-    const blueprint: Blueprint = await this.strategyService.getBlueprint(dto.blueprintId);
+  async startExecution(userId: string, dto: StartExecutionDto, idempotencyKey?: string) {
+    // 0. Idempotency check — return cached response if key already processed
+    if (idempotencyKey) {
+      const cached = await this.idempotency.getExistingResponse(
+        userId,
+        idempotencyKey,
+        'execution.start',
+      );
+      if (cached) return cached;
+    }
+
+    // 1. Validate Blueprint exists, is not expired, and belongs to the user
+    const blueprint: Blueprint = await this.strategyService.getBlueprint(userId, dto.blueprintId);
 
     const now = new Date();
     if (blueprint.expiresAt && new Date(blueprint.expiresAt) < now) {
@@ -61,17 +75,6 @@ export class ExecutionService {
 
     if (!account) throw new NotFoundException('Exchange account not found');
     if (account.userId !== userId) throw new ForbiddenException('You do not own this exchange account');
-
-    const credentials = {
-      encryptedApiKey: account.apiKeyEncrypted,
-      encryptedApiSecret: account.apiSecretEncrypted,
-      keyVersion: account.apiKeyKeyVersion,
-      context: {
-        exchangeAccountId: account.id,
-        userId: account.userId,
-        purpose: 'startExecution',
-      } satisfies DecryptContext,
-    };
 
     // 4. Get current market price to anchor grid levels (Market Engine, no creds needed)
     let currentPrice = 100;
@@ -115,7 +118,11 @@ export class ExecutionService {
       })),
     });
 
-    // 7. Persist GridOrder records to DB
+    // 7. Persist GridOrder records to DB with 'pending' status.
+    //    In the trigger-based model (Mode B), grid levels are VIRTUAL trigger
+    //    points — NO limit orders are placed in the order book at start.
+    //    The Worker monitors real-time price and triggers a MARKET BUY when
+    //    price touches/crosses a grid level.
     const gridOrderData = gridResult.sections.flatMap((section) =>
       section.orders.map((order) => ({
         gridStrategyId: gridStrategy.id,
@@ -133,63 +140,43 @@ export class ExecutionService {
 
     await this.prisma.gridOrder.createMany({ data: gridOrderData });
 
-    // 8. Build order states for execution engine and place Buy Limit orders
-    const orderStates: ExecutionOrderState[] = gridOrderData.map((o) => ({
-      dbId: o.clientOrderId,
-      clientOrderId: o.clientOrderId,
-      exchangeOrderId: null,
-      tpExchangeOrderId: null,
-      sectionIndex: o.sectionIndex,
-      orderIndex: o.orderIndex,
-      globalOrderIndex: o.globalOrderIndex,
-      gridPrice: o.gridPrice,
-      tpPrice: o.tpPrice,
-      allocatedCapital: o.allocatedCapital,
-      estimatedQuantity: o.estimatedQuantity,
-      status: 'pending' as const,
-      buyFilledPrice: null,
-      buyFilledQuantity: null,
-      buyFee: null,
-      tpFilledPrice: null,
-      tpFee: null,
-      realizedPnl: null,
-    }));
+    this.logger.info('Strategy started in trigger-based mode', {
+      strategyId: gridStrategy.id,
+      gridLevels: gridOrderData.length,
+    });
 
-    // Per Secret Ownership Rule #5: Execution Engine forwards the ciphertext
-    // to Exchange Engine. Decryption + audit log happen inside Exchange Engine.
-    const placeResult = await this.executionEngine.placeGridOrdersEncrypted(
-      blueprint.exchange as 'binance' | 'bybit',
-      credentials,
-      blueprint.pair,
-      orderStates,
-    );
-
-    // 9. Update DB order statuses
-    for (const order of placeResult.orders) {
-      await this.prisma.gridOrder.update({
-        where: { clientOrderId: order.clientOrderId },
-        data: {
-          status: order.status,
-          exchangeOrderId: order.exchangeOrderId ?? undefined,
-          placedAt: order.status === 'placed' ? new Date() : undefined,
-        },
-      });
-    }
-
-    const summary = this.executionEngine.summarizeOrders(placeResult.orders);
-
-    return {
+    const result = {
       strategyId: gridStrategy.id,
       blueprintId: blueprint.id,
       pair: blueprint.pair,
       exchange: blueprint.exchange,
       capital: blueprint.tradingCapital,
       status: 'active',
-      ordersSummary: summary,
+      ordersSummary: {
+        total: gridOrderData.length,
+        pending: gridOrderData.length,
+      },
     };
+
+    // Store idempotency response
+    if (idempotencyKey) {
+      await this.idempotency.storeResponse(userId, idempotencyKey, 'execution.start', result);
+    }
+
+    return result;
   }
 
-  async stopExecution(userId: string, strategyId: string) {
+  async stopExecution(userId: string, strategyId: string, idempotencyKey?: string) {
+    // 0. Idempotency check — return cached response if key already processed
+    if (idempotencyKey) {
+      const cached = await this.idempotency.getExistingResponse(
+        userId,
+        idempotencyKey,
+        'execution.stop',
+      );
+      if (cached) return cached;
+    }
+
     const strategy = await this.prisma.gridStrategy.findUnique({
       where: { id: strategyId },
       include: { orders: true },
@@ -258,9 +245,11 @@ export class ExecutionService {
         }
       }
 
-      this.logger.log(
-        `[Execution] Stop strategy ${strategyId}: canceled=${cancelResult.canceled}, errors=${cancelResult.errors}`,
-      );
+      this.logger.info('Stop strategy', {
+        strategyId,
+        canceled: cancelResult.canceled,
+        errors: cancelResult.errors,
+      });
     }
 
     // Update strategy status
@@ -269,7 +258,14 @@ export class ExecutionService {
       data: { status: 'stopped', stoppedAt: new Date() },
     });
 
-    return { strategyId: updated.id, status: updated.status, stoppedAt: updated.stoppedAt };
+    const result = { strategyId: updated.id, status: updated.status, stoppedAt: updated.stoppedAt };
+
+    // Store idempotency response
+    if (idempotencyKey) {
+      await this.idempotency.storeResponse(userId, idempotencyKey, 'execution.stop', result);
+    }
+
+    return result;
   }
 
   async getActiveStrategies(userId: string) {
@@ -345,6 +341,7 @@ export class ExecutionService {
           where: { status: 'pending' },
           orderBy: { globalOrderIndex: 'asc' },
         },
+        blueprint: true,
       },
     });
 
@@ -352,6 +349,9 @@ export class ExecutionService {
       strategyId: s.id,
       symbol: s.pair,
       exchange: s.exchange,
+      // Capital Protection on Gaps: max % of capital that can be executed
+      // in a single price movement (Level Crossing Rule)
+      maxCapitalPerMovementPercent: s.blueprint?.maxCapitalPerMovementPercent ?? 40,
       pendingOrders: s.orders.map((o) => ({
         orderId: o.id,
         symbol: s.pair,
@@ -359,8 +359,90 @@ export class ExecutionService {
         tpPrice: o.tpPrice,
         sectionIndex: o.sectionIndex,
         orderIndex: o.orderIndex,
+        allocatedCapital: o.allocatedCapital,
       })),
     }));
+  }
+
+  /**
+   * Triggers multiple Market Buys when a price gap crosses several grid levels.
+   *
+   * Capital Protection on Gaps (BUSINESS_RULES.md):
+   * - Max % of capital that can be executed in a single price movement
+   * - If a gap would trigger more than the max %, only the first max % is executed
+   * - Remaining crossed levels wait for the next price movement
+   */
+  async triggerGridOrdersBatch(
+    strategyId: string,
+    orderIds: string[],
+    triggeredPrice: number
+  ) {
+    if (!orderIds || orderIds.length === 0) {
+      return { executed: [], skipped: [] };
+    }
+
+    const strategy = await this.prisma.gridStrategy.findUnique({
+      where: { id: strategyId },
+      include: { blueprint: true },
+    });
+
+    if (!strategy || strategy.status !== 'active') {
+      return { executed: [], skipped: orderIds };
+    }
+
+    // Fetch all pending orders for this strategy
+    const orders = await this.prisma.gridOrder.findMany({
+      where: {
+        id: { in: orderIds },
+        gridStrategyId: strategyId,
+        status: 'pending',
+      },
+      orderBy: { globalOrderIndex: 'asc' },
+    });
+
+    if (orders.length === 0) {
+      return { executed: [], skipped: orderIds };
+    }
+
+    // Capital Protection on Gaps: enforce max capital per movement
+    const maxCapitalPercent = strategy.blueprint?.maxCapitalPerMovementPercent ?? 40;
+    const maxCapitalUsdt = (strategy.capital * maxCapitalPercent) / 100;
+
+    // Select orders up to the max capital limit
+    let accumulatedCapital = 0;
+    const ordersToExecute: typeof orders = [];
+    const ordersSkipped: string[] = [];
+
+    for (const order of orders) {
+      if (accumulatedCapital + order.allocatedCapital <= maxCapitalUsdt) {
+        ordersToExecute.push(order);
+        accumulatedCapital += order.allocatedCapital;
+      } else {
+        ordersSkipped.push(order.id);
+      }
+    }
+
+    this.logger.info('Batch trigger result', {
+      strategyId,
+      executed: ordersToExecute.length,
+      accumulatedCapitalUsdt: Number(accumulatedCapital.toFixed(2)),
+      skipped: ordersSkipped.length,
+      maxCapitalPercent,
+    });
+
+    // Execute each selected order
+    const executed: any[] = [];
+    for (const order of ordersToExecute) {
+      try {
+        const result = await this.triggerGridOrder(order.id, triggeredPrice);
+        executed.push(result);
+      } catch (err: any) {
+        this.logger.error('Batch trigger failed for order', { orderId: order.id }, err);
+        ordersSkipped.push(order.id);
+      }
+    }
+
+    return { executed, skipped: ordersSkipped };
   }
 
   /**
@@ -380,7 +462,7 @@ export class ExecutionService {
 
     if (!order) throw new NotFoundException(`Grid order ${orderId} not found`);
     if (order.status !== 'pending') {
-      this.logger.warn(`[Worker] Order ${orderId} is not pending (status: ${order.status}). Skipping.`);
+      this.logger.warn('Order is not pending, skipping', { orderId, status: order.status });
       return { skipped: true, reason: 'Order already processed' };
     }
 
@@ -392,7 +474,7 @@ export class ExecutionService {
     });
 
     if (!account) {
-      this.logger.error(`[Worker] No exchange account bound to strategy ${strategy.id}`);
+      this.logger.error('No exchange account bound to strategy', { strategyId: strategy.id });
       throw new NotFoundException('No exchange account bound to strategy');
     }
 
@@ -429,10 +511,11 @@ export class ExecutionService {
       realizedPnl: null,
     };
 
-    // Mark as 'placed' to prevent double-trigger
+    // Mark as 'filled' to prevent double-trigger (the market buy is executed
+    // immediately; no 'placed' intermediate state exists in trigger-based mode)
     await this.prisma.gridOrder.update({
       where: { id: orderId },
-      data: { status: 'placed', placedAt: new Date() },
+      data: { status: 'filled', placedAt: new Date() },
     });
 
     // Execute Market Buy via the encrypted path; decryption + audit log
@@ -458,15 +541,40 @@ export class ExecutionService {
       },
     });
 
-    this.logger.log(
-      `[Worker] Order ${orderId} (${strategy.pair}) filled at $${fillResult.filledPrice ?? triggeredPrice}`,
-    );
+    // If TP SELL LIMIT was placed, update the order with its exchange ID
+    if (fillResult.tpExchangeOrderId) {
+      await this.prisma.gridOrder.update({
+        where: { id: orderId },
+        data: {
+          status: 'tp_placed',
+          tpExchangeOrderId: fillResult.tpExchangeOrderId,
+        },
+      });
+    }
+
+    this.logger.info('Order filled', {
+      orderId,
+      pair: strategy.pair,
+      filledPrice: fillResult.filledPrice ?? triggeredPrice,
+    });
+
+    // Emit real-time update to the strategy owner (Real-Time Data Rules)
+    this.realtime.emitOrderUpdate(strategy.userId, {
+      orderId,
+      strategyId: strategy.id,
+      pair: strategy.pair,
+      status: fillResult.tpExchangeOrderId ? 'tp_placed' : 'filled',
+      filledPrice: fillResult.filledPrice ?? triggeredPrice,
+      exchangeOrderId: fillResult.exchangeOrderId,
+      tpExchangeOrderId: fillResult.tpExchangeOrderId,
+    });
 
     return {
       orderId,
-      status: 'filled',
+      status: fillResult.tpExchangeOrderId ? 'tp_placed' : 'filled',
       filledPrice: fillResult.filledPrice ?? triggeredPrice,
       exchangeOrderId: fillResult.exchangeOrderId,
+      tpExchangeOrderId: fillResult.tpExchangeOrderId,
     };
   }
 }

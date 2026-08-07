@@ -20,6 +20,7 @@
   "dependencies": {
     "@qis/core": "workspace:*",
     "@qis/market-engine": "workspace:*",
+    "@qis/providers-ai": "workspace:*",
     "@qis/shared": "workspace:*"
   },
   "devDependencies": {

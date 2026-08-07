@@ -1,11 +1,14 @@
 // Qis Execution Engine
 // Responsible for:
-// - Placing Buy Limit Orders on exchange at grid price levels
-// - Monitoring order fill status
-// - Placing Take Profit Sell Orders when Buy is FILLED
+// - Executing MARKET BUY when a grid level is touched/crossed (trigger-based)
+// - Placing Take Profit SELL LIMIT orders immediately after market buy fill
 // - Retry logic for failed placements
 // - Order cancellation on strategy stop
 // Never makes strategy decisions.
+//
+// Grid levels are VIRTUAL trigger points — NOT limit orders in the order book.
+// The Worker monitors real-time price and triggers this Engine when a level
+// is crossed. Execution is always a MARKET order for guaranteed fill.
 //
 // Secret Ownership Rule:
 //   Execution Engine does NOT decrypt. It receives encrypted blobs and
@@ -16,7 +19,6 @@ import { ExchangeEngine, type DecryptContext } from '@qis/exchange-engine';
 
 export type OrderStatus =
   | 'pending'
-  | 'placed'
   | 'filled'
   | 'tp_placed'
   | 'tp_filled'
@@ -44,19 +46,6 @@ export interface ExecutionOrderState {
   realizedPnl: number | null;
 }
 
-export interface PlaceGridOrdersResult {
-  placed: number;
-  failed: number;
-  orders: ExecutionOrderState[];
-}
-
-export interface CheckAndFillResult {
-  filled: string[];
-  tpPlaced: string[];
-  tpFilled: string[];
-  errors: string[];
-}
-
 export interface EncryptedCredentials {
   encryptedApiKey: string;
   encryptedApiSecret: string;
@@ -82,205 +71,6 @@ export class ExecutionEngine {
   // Receives encrypted creds, forwards to Exchange Engine. No decryption
   // happens in this Engine.
   // ============================================================
-
-  async placeGridOrdersEncrypted(
-    exchange: 'binance' | 'bybit',
-    credentials: EncryptedCredentials,
-    symbol: string,
-    orders: ExecutionOrderState[]
-  ): Promise<PlaceGridOrdersResult> {
-    let placed = 0;
-    let failed = 0;
-    const updatedOrders = [...orders];
-
-    for (const order of updatedOrders) {
-      if (order.status !== 'pending') continue;
-
-      let success = false;
-      for (let attempt = 1; attempt <= MAX_RETRY; attempt++) {
-        try {
-          const result = await this.exchangeEngine.executeOrderEncrypted({
-            exchange,
-            encryptedApiKey: credentials.encryptedApiKey,
-            encryptedApiSecret: credentials.encryptedApiSecret,
-            keyVersion: credentials.keyVersion,
-            context: credentials.context,
-            symbol,
-            side: 'buy',
-            amount: order.estimatedQuantity,
-            price: order.gridPrice,
-            type: 'limit',
-            clientOrderId: order.clientOrderId,
-          });
-
-          order.exchangeOrderId = result.id;
-          order.status = 'placed';
-          placed++;
-          success = true;
-          break;
-        } catch (error: any) {
-          console.error(
-            `[ExecutionEngine] Failed to place buy order ${order.clientOrderId} (attempt ${attempt}/${MAX_RETRY}):`,
-            error.message,
-          );
-          if (attempt < MAX_RETRY) await sleep(RETRY_DELAY_MS);
-        }
-      }
-
-      if (!success) {
-        order.status = 'error';
-        failed++;
-      }
-    }
-
-    return { placed, failed, orders: updatedOrders };
-  }
-
-  async checkAndProcessFillsEncrypted(
-    exchange: 'binance' | 'bybit',
-    credentials: EncryptedCredentials,
-    symbol: string,
-    orders: ExecutionOrderState[]
-  ): Promise<CheckAndFillResult> {
-    const filled: string[] = [];
-    const tpPlaced: string[] = [];
-    const tpFilled: string[] = [];
-    const errors: string[] = [];
-
-    for (const order of orders) {
-      try {
-        if (order.status === 'placed' && order.exchangeOrderId) {
-          const liveOrder = await this.exchangeEngine.fetchOrderEncrypted(
-            exchange,
-            credentials.encryptedApiKey,
-            credentials.encryptedApiSecret,
-            order.exchangeOrderId,
-            symbol,
-            credentials.context,
-          );
-
-          if (liveOrder.status === 'closed') {
-            order.status = 'filled';
-            order.buyFilledPrice = liveOrder.executedPrice;
-            order.buyFilledQuantity = liveOrder.filled;
-            order.buyFee = liveOrder.fee;
-            filled.push(order.clientOrderId);
-
-            const tpClientOrderId = `${order.clientOrderId}_tp`;
-            try {
-              const tpResult = await this.exchangeEngine.executeOrderEncrypted({
-                exchange,
-                encryptedApiKey: credentials.encryptedApiKey,
-                encryptedApiSecret: credentials.encryptedApiSecret,
-                keyVersion: credentials.keyVersion,
-                context: credentials.context,
-                symbol,
-                side: 'sell',
-                amount: order.buyFilledQuantity ?? order.estimatedQuantity,
-                price: order.tpPrice,
-                type: 'limit',
-                clientOrderId: tpClientOrderId,
-              });
-              order.tpExchangeOrderId = tpResult.id;
-              order.status = 'tp_placed';
-              tpPlaced.push(order.clientOrderId);
-            } catch (tpErr: any) {
-              console.error(
-                `[ExecutionEngine] Failed to place TP for ${order.clientOrderId}:`,
-                tpErr.message,
-              );
-              errors.push(order.clientOrderId);
-            }
-          } else if (liveOrder.status === 'canceled') {
-            order.status = 'canceled';
-          }
-        }
-
-        if (order.status === 'tp_placed' && order.tpExchangeOrderId) {
-          const tpLiveOrder = await this.exchangeEngine.fetchOrderEncrypted(
-            exchange,
-            credentials.encryptedApiKey,
-            credentials.encryptedApiSecret,
-            order.tpExchangeOrderId,
-            symbol,
-            credentials.context,
-          );
-
-          if (tpLiveOrder.status === 'closed') {
-            order.tpFilledPrice = tpLiveOrder.executedPrice;
-            order.tpFee = tpLiveOrder.fee;
-
-            const buyCost = (order.buyFilledQuantity ?? 0) * (order.buyFilledPrice ?? 0);
-            const buyFee = order.buyFee ?? 0;
-            const sellRevenue = (tpLiveOrder.filled ?? 0) * tpLiveOrder.executedPrice;
-            const sellFee = tpLiveOrder.fee ?? 0;
-            order.realizedPnl = sellRevenue - sellFee - buyCost - buyFee;
-
-            order.status = 'tp_filled';
-            tpFilled.push(order.clientOrderId);
-          } else if (tpLiveOrder.status === 'canceled') {
-            order.status = 'filled';
-            order.tpExchangeOrderId = null;
-          }
-        }
-      } catch (pollErr: any) {
-        console.error(
-          `[ExecutionEngine] Error polling order ${order.clientOrderId}:`,
-          pollErr.message,
-        );
-        errors.push(order.clientOrderId);
-      }
-    }
-
-    return { filled, tpPlaced, tpFilled, errors };
-  }
-
-  async cancelAllOpenOrdersEncrypted(
-    exchange: 'binance' | 'bybit',
-    credentials: EncryptedCredentials,
-    symbol: string,
-    orders: ExecutionOrderState[]
-  ): Promise<{ canceled: number; errors: number }> {
-    let canceled = 0;
-    let errCount = 0;
-
-    for (const order of orders) {
-      if (order.status === 'placed' && order.exchangeOrderId) {
-        const ok = await this.exchangeEngine.cancelOrderEncrypted(
-          exchange,
-          credentials.encryptedApiKey,
-          credentials.encryptedApiSecret,
-          order.exchangeOrderId,
-          symbol,
-          credentials.context,
-        );
-        if (ok) {
-          order.status = 'canceled';
-          canceled++;
-        } else {
-          errCount++;
-        }
-      }
-
-      if (order.status === 'tp_placed' && order.tpExchangeOrderId) {
-        const ok = await this.exchangeEngine.cancelOrderEncrypted(
-          exchange,
-          credentials.encryptedApiKey,
-          credentials.encryptedApiSecret,
-          order.tpExchangeOrderId,
-          symbol,
-          credentials.context,
-        );
-        if (ok) {
-          canceled++;
-        } else {
-          errCount++;
-        }
-      }
-    }
-
-    return { canceled, errors: errCount };
-  }
 
   /**
    * Executes a MARKET BUY for a single grid order when price crosses
@@ -380,163 +170,17 @@ export class ExecutionEngine {
     return { exchangeOrderId, filledPrice, filledQuantity, fee, tpExchangeOrderId };
   }
 
-  // ============================================================
-  // Plaintext methods — kept for internal Engine-to-Engine calls only.
-  // Business/ API layers MUST use the *Encrypted variants above.
-  // ============================================================
-
-  async placeGridOrders(
+  /**
+   * Cancels all open TP SELL LIMIT orders for a strategy.
+   * Called when the trader stops a strategy.
+   *
+   * Note: In the trigger-based model (Mode B), there are NO buy limit orders
+   * in the order book. Only TP SELL LIMIT orders exist after a market buy
+   * has been filled. This method cancels those TP orders.
+   */
+  async cancelAllOpenOrdersEncrypted(
     exchange: 'binance' | 'bybit',
-    apiKey: string,
-    apiSecret: string,
-    symbol: string,
-    orders: ExecutionOrderState[]
-  ): Promise<PlaceGridOrdersResult> {
-    let placed = 0;
-    let failed = 0;
-    const updatedOrders = [...orders];
-
-    for (const order of updatedOrders) {
-      if (order.status !== 'pending') continue;
-
-      let success = false;
-      for (let attempt = 1; attempt <= MAX_RETRY; attempt++) {
-        try {
-          const result = await this.exchangeEngine.executeOrder({
-            exchange,
-            apiKey,
-            apiSecret,
-            symbol,
-            side: 'buy',
-            amount: order.estimatedQuantity,
-            price: order.gridPrice,
-            type: 'limit',
-            clientOrderId: order.clientOrderId,
-          });
-
-          order.exchangeOrderId = result.id;
-          order.status = 'placed';
-          placed++;
-          success = true;
-          break;
-        } catch (error: any) {
-          console.error(
-            `[ExecutionEngine] Failed to place buy order ${order.clientOrderId} (attempt ${attempt}/${MAX_RETRY}):`,
-            error.message,
-          );
-          if (attempt < MAX_RETRY) await sleep(RETRY_DELAY_MS);
-        }
-      }
-
-      if (!success) {
-        order.status = 'error';
-        failed++;
-      }
-    }
-
-    return { placed, failed, orders: updatedOrders };
-  }
-
-  async checkAndProcessFills(
-    exchange: 'binance' | 'bybit',
-    apiKey: string,
-    apiSecret: string,
-    symbol: string,
-    orders: ExecutionOrderState[]
-  ): Promise<CheckAndFillResult> {
-    const filled: string[] = [];
-    const tpPlaced: string[] = [];
-    const tpFilled: string[] = [];
-    const errors: string[] = [];
-
-    for (const order of orders) {
-      try {
-        if (order.status === 'placed' && order.exchangeOrderId) {
-          const liveOrder = await this.exchangeEngine.fetchOrder(
-            exchange,
-            apiKey,
-            apiSecret,
-            order.exchangeOrderId,
-            symbol,
-          );
-
-          if (liveOrder.status === 'closed') {
-            order.status = 'filled';
-            order.buyFilledPrice = liveOrder.executedPrice;
-            order.buyFilledQuantity = liveOrder.filled;
-            order.buyFee = liveOrder.fee;
-            filled.push(order.clientOrderId);
-
-            const tpClientOrderId = `${order.clientOrderId}_tp`;
-            try {
-              const tpResult = await this.exchangeEngine.executeOrder({
-                exchange,
-                apiKey,
-                apiSecret,
-                symbol,
-                side: 'sell',
-                amount: order.buyFilledQuantity ?? order.estimatedQuantity,
-                price: order.tpPrice,
-                type: 'limit',
-                clientOrderId: tpClientOrderId,
-              });
-              order.tpExchangeOrderId = tpResult.id;
-              order.status = 'tp_placed';
-              tpPlaced.push(order.clientOrderId);
-            } catch (tpErr: any) {
-              console.error(
-                `[ExecutionEngine] Failed to place TP for ${order.clientOrderId}:`,
-                tpErr.message,
-              );
-              errors.push(order.clientOrderId);
-            }
-          } else if (liveOrder.status === 'canceled') {
-            order.status = 'canceled';
-          }
-        }
-
-        if (order.status === 'tp_placed' && order.tpExchangeOrderId) {
-          const tpLiveOrder = await this.exchangeEngine.fetchOrder(
-            exchange,
-            apiKey,
-            apiSecret,
-            order.tpExchangeOrderId,
-            symbol,
-          );
-
-          if (tpLiveOrder.status === 'closed') {
-            order.tpFilledPrice = tpLiveOrder.executedPrice;
-            order.tpFee = tpLiveOrder.fee;
-
-            const buyCost = (order.buyFilledQuantity ?? 0) * (order.buyFilledPrice ?? 0);
-            const buyFee = order.buyFee ?? 0;
-            const sellRevenue = (tpLiveOrder.filled ?? 0) * tpLiveOrder.executedPrice;
-            const sellFee = tpLiveOrder.fee ?? 0;
-            order.realizedPnl = sellRevenue - sellFee - buyCost - buyFee;
-
-            order.status = 'tp_filled';
-            tpFilled.push(order.clientOrderId);
-          } else if (tpLiveOrder.status === 'canceled') {
-            order.status = 'filled';
-            order.tpExchangeOrderId = null;
-          }
-        }
-      } catch (pollErr: any) {
-        console.error(
-          `[ExecutionEngine] Error polling order ${order.clientOrderId}:`,
-          pollErr.message,
-        );
-        errors.push(order.clientOrderId);
-      }
-    }
-
-    return { filled, tpPlaced, tpFilled, errors };
-  }
-
-  async cancelAllOpenOrders(
-    exchange: 'binance' | 'bybit',
-    apiKey: string,
-    apiSecret: string,
+    credentials: EncryptedCredentials,
     symbol: string,
     orders: ExecutionOrderState[]
   ): Promise<{ canceled: number; errors: number }> {
@@ -544,29 +188,14 @@ export class ExecutionEngine {
     let errCount = 0;
 
     for (const order of orders) {
-      if (order.status === 'placed' && order.exchangeOrderId) {
-        const ok = await this.exchangeEngine.cancelOrder(
-          exchange,
-          apiKey,
-          apiSecret,
-          order.exchangeOrderId,
-          symbol,
-        );
-        if (ok) {
-          order.status = 'canceled';
-          canceled++;
-        } else {
-          errCount++;
-        }
-      }
-
       if (order.status === 'tp_placed' && order.tpExchangeOrderId) {
-        const ok = await this.exchangeEngine.cancelOrder(
+        const ok = await this.exchangeEngine.cancelOrderEncrypted(
           exchange,
-          apiKey,
-          apiSecret,
+          credentials.encryptedApiKey,
+          credentials.encryptedApiSecret,
           order.tpExchangeOrderId,
           symbol,
+          credentials.context,
         );
         if (ok) {
           canceled++;
@@ -579,6 +208,15 @@ export class ExecutionEngine {
     return { canceled, errors: errCount };
   }
 
+  // ============================================================
+  // Plaintext methods — kept for internal Engine-to-Engine calls only.
+  // Business/API layers MUST use the *Encrypted variants above.
+  // ============================================================
+
+  /**
+   * Executes a MARKET BUY for a single grid order when price crosses
+   * the grid level. Plaintext variant for internal Engine-to-Engine calls.
+   */
   async executeSingleMarketBuy(
     exchange: 'binance' | 'bybit',
     apiKey: string,
@@ -665,13 +303,46 @@ export class ExecutionEngine {
   }
 
   /**
+   * Cancels all open TP SELL LIMIT orders for a strategy.
+   * Plaintext variant for internal Engine-to-Engine calls.
+   */
+  async cancelAllOpenOrders(
+    exchange: 'binance' | 'bybit',
+    apiKey: string,
+    apiSecret: string,
+    symbol: string,
+    orders: ExecutionOrderState[]
+  ): Promise<{ canceled: number; errors: number }> {
+    let canceled = 0;
+    let errCount = 0;
+
+    for (const order of orders) {
+      if (order.status === 'tp_placed' && order.tpExchangeOrderId) {
+        const ok = await this.exchangeEngine.cancelOrder(
+          exchange,
+          apiKey,
+          apiSecret,
+          order.tpExchangeOrderId,
+          symbol,
+        );
+        if (ok) {
+          canceled++;
+        } else {
+          errCount++;
+        }
+      }
+    }
+
+    return { canceled, errors: errCount };
+  }
+
+  /**
    * Calculates summary stats for an active strategy's orders.
    */
   summarizeOrders(orders: ExecutionOrderState[]) {
     const counts = {
       total: orders.length,
       pending: 0,
-      placed: 0,
       filled: 0,
       tpPlaced: 0,
       tpFilled: 0,

@@ -17,6 +17,7 @@ export interface BuildStrategyInput {
   sectionCount: 1 | 2 | 3;
   capitalAllocationPercent?: number[]; // e.g. [35, 35, 30]
   riskPreference?: 'low' | 'medium' | 'high';
+  floorAction?: 'pause' | 'notify' | 'hard_stop'; // Trader's choice at approval time
 }
 
 export interface DetailedSimulationResult {
@@ -63,11 +64,13 @@ export class StrategyEngine {
     // Get AI Recommendations for grid configuration & section parameters
     const aiRec = await this.aiEngine.recommendStrategyParams(exchange, pair, sectionCount, capital);
 
-    // Fetch current price for grid builder
+    // Fetch current price & volatility for grid builder and floor calculation
     let currentPrice = 100;
+    let volatility = 4.0; // default moderate volatility
     try {
-      const ticker = await this.marketEngine.getTicker(exchange, pair);
-      currentPrice = ticker.last || currentPrice;
+      const stats = await this.marketEngine.getMarketStats(exchange, pair);
+      currentPrice = stats.price || currentPrice;
+      volatility = stats.volatilityPercent || volatility;
     } catch {
       // Use fallback price if exchange engine ticker is unavailable
     }
@@ -109,6 +112,16 @@ export class StrategyEngine {
       };
     });
 
+    // Capital Protection Floor — AI-recommended, not hardcoded.
+    // Per BUSINESS_RULES_ADDENDUM.md:
+    // - AI must calculate and recommend the floor with reasoning
+    // - Trader chooses the floor action (pause/notify/hard_stop) at approval time
+    const capitalProtectionFloor = this.calculateCapitalProtectionFloor(
+      currentPrice,
+      aiRec.capitalProtectionFloorPrice,
+      volatility,
+    );
+
     const blueprint: Blueprint = {
       id: `bp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       exchange,
@@ -116,8 +129,8 @@ export class StrategyEngine {
       tradingCapital: capital,
       sectionCount,
       sections,
-      capitalProtectionFloor: Number((gridResult.lowestGridPrice * 0.85).toFixed(6)),
-      floorAction: 'notify',
+      capitalProtectionFloor,
+      floorAction: input.floorAction ?? 'notify',
       maxCapitalPerMovementPercent: aiRec.maxCapitalPerMovementPercent,
       maxDrawdownAlertPercent: aiRec.maxDrawdownAlertPercent,
       confidenceScore: aiRec.confidenceScore,
@@ -133,6 +146,31 @@ export class StrategyEngine {
     }
 
     return blueprint;
+  }
+
+  /**
+   * Calculates the Capital Protection Floor dynamically.
+   *
+   * Priority:
+   * 1. Use AI-recommended floor price if provided (> 0)
+   * 2. Fallback: dynamic calculation based on current price and volatility
+   *    (instead of hardcoded 85% of lowest grid price)
+   */
+  private calculateCapitalProtectionFloor(
+    currentPrice: number,
+    aiRecommendedFloor: number,
+    volatility: number
+  ): number {
+    // AI recommendation takes priority if valid
+    if (aiRecommendedFloor && aiRecommendedFloor > 0 && aiRecommendedFloor < currentPrice) {
+      return Number(aiRecommendedFloor.toFixed(6));
+    }
+
+    // Dynamic fallback: floor is below current price by a volatility-adjusted margin.
+    // Wider volatility → deeper floor distance to avoid premature triggering.
+    const volatilityFactor = Math.max(0.15, Math.min(0.35, volatility / 25));
+    const floorDistance = currentPrice * volatilityFactor;
+    return Number((currentPrice - floorDistance).toFixed(6));
   }
 
   /**

@@ -16,9 +16,10 @@
     "clean": "turbo run clean"
   },
   "devDependencies": {
+    "@types/node": "^22.10.0",
     "turbo": "^2.5.0",
     "typescript": "^5.7.0",
-    "@types/node": "^22.10.0"
+    "vitest": "^4.1.10"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

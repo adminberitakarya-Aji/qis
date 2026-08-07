@@ -38,8 +38,10 @@ export interface PortfolioSummary {
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T | null> {
   try {
+    const { authHeaders } = await import('./auth');
+    const headers = authHeaders();
     const res = await fetch(`${API_BASE}${path}`, {
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       ...options,
     });
 

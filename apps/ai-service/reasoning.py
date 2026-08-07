@@ -43,6 +43,93 @@ def generate_pair_reasoning(symbol: str, features: Dict[str, Any], volume_24h: f
     }
 
 
+def calculate_capital_protection_floor(
+    current_price: float,
+    ai_recommended_floor: float,
+    volatility: float
+) -> float:
+    """
+    Calculates the Capital Protection Floor dynamically.
+    
+    Priority:
+    1. Use AI-recommended floor price if provided (> 0 and < current_price)
+    2. Fallback: dynamic calculation based on current price and volatility
+       (instead of hardcoded 85% of lowest grid price)
+    
+    This mirrors the TypeScript StrategyEngine's calculateCapitalProtectionFloor method.
+    """
+    # AI recommendation takes priority if valid
+    if ai_recommended_floor and ai_recommended_floor > 0 and ai_recommended_floor < current_price:
+        return round(ai_recommended_floor, 6)
+    
+    # Dynamic fallback: floor is below current price by a volatility-adjusted margin.
+    # Wider volatility → deeper floor distance to avoid premature triggering.
+    volatility_factor = max(0.15, min(0.35, volatility / 25.0))
+    floor_distance = current_price * volatility_factor
+    return round(current_price - floor_distance, 6)
+
+
+def calculate_max_capital_per_movement(volatility: float, risk_score: float) -> float:
+    """
+    AI-recommended maximum capital exposure per price movement.
+    
+    Based on:
+    - Volatility: Higher volatility → lower max capital per movement
+    - Risk score: Derived from grid suitability score (inverse relationship)
+    
+    Returns a percentage (e.g., 40.0 means 40% of capital)
+    """
+    # Base allocation starts at 40% (conservative default)
+    base_percent = 40.0
+    
+    # Adjust based on volatility (higher volatility = more conservative)
+    if volatility > 6.0:
+        vol_adjustment = -10.0  # High volatility: reduce to 30%
+    elif volatility < 3.0:
+        vol_adjustment = 5.0   # Low volatility: increase to 45%
+    else:
+        vol_adjustment = 0.0   # Medium volatility: keep at 40%
+    
+    # Adjust based on risk score (higher score = more confidence = slightly more aggressive)
+    # risk_score is typically 50-98 from grid_suitability_score
+    risk_adjustment = (risk_score - 70.0) * 0.1  # +/- ~3% adjustment
+    
+    max_percent = base_percent + vol_adjustment + risk_adjustment
+    
+    # Clamp between reasonable bounds (25% - 50%)
+    return round(max(25.0, min(50.0, max_percent)), 1)
+
+
+def calculate_max_drawdown_alert(volatility: float, atr_percent: float) -> float:
+    """
+    AI-recommended maximum drawdown alert threshold.
+    
+    Based on:
+    - Volatility: Higher volatility → wider alert threshold to avoid false alarms
+    - ATR %: Higher ATR → wider threshold
+    
+    Returns a percentage (e.g., 15.0 means alert at 15% drawdown)
+    """
+    # Base alert at 15%
+    base_percent = 15.0
+    
+    # Adjust based on volatility (higher volatility = wider threshold)
+    if volatility > 6.0:
+        vol_adjustment = 5.0   # High volatility: alert at 20%
+    elif volatility < 3.0:
+        vol_adjustment = -3.0  # Low volatility: alert at 12%
+    else:
+        vol_adjustment = 0.0   # Medium volatility: keep at 15%
+    
+    # Adjust based on ATR (higher ATR = wider threshold)
+    atr_adjustment = atr_percent * 0.5  # Add half of ATR% as buffer
+    
+    max_dd = base_percent + vol_adjustment + atr_adjustment
+    
+    # Clamp between reasonable bounds (8% - 25%)
+    return round(max(8.0, min(25.0, max_dd)), 1)
+
+
 def generate_strategy_recommendation(
     symbol: str,
     features: Dict[str, Any],
@@ -117,12 +204,24 @@ def generate_strategy_recommendation(
         f"Configured across {section_count} sections with dynamic Section Gaps to maximize compound grid recycling while shielding capital."
     )
 
+    # Capital Protection: AI-calculated dynamic values (not hardcoded)
+    # Note: current_price is not available at this level; the AI service provides
+    # the methodology, and the StrategyEngine will apply it with real-time price.
+    # We set capitalProtectionFloorPrice to 0 to signal "use dynamic calculation in StrategyEngine"
+    # The StrategyEngine's calculateCapitalProtectionFloor() will use:
+    #   volatilityFactor = clamp(volatility / 25, 0.15, 0.35)
+    #   floor = currentPrice * (1 - volatilityFactor)
+    capital_protection_floor_price = 0.0  # Signal to use dynamic calculation
+
+    max_capital_per_movement = calculate_max_capital_per_movement(volatility, score)
+    max_drawdown_alert = calculate_max_drawdown_alert(volatility, atr)
+
     return {
         "pair": symbol,
         "confidenceScore": round(score, 1),
         "overallReasoning": overall_reasoning,
         "recommendedSections": sections,
-        "capitalProtectionFloorPrice": 0.0,
-        "maxCapitalPerMovementPercent": 40.0,
-        "maxDrawdownAlertPercent": 15.0,
+        "capitalProtectionFloorPrice": capital_protection_floor_price,
+        "maxCapitalPerMovementPercent": max_capital_per_movement,
+        "maxDrawdownAlertPercent": max_drawdown_alert,
     }

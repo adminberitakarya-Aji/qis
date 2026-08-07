@@ -20,6 +20,7 @@ export type FloorAction = 'pause' | 'notify' | 'hard_stop';
 
 export interface Blueprint {
   id: string;
+  userId?: string;
   pair: string;
   exchange: ExchangeName;
   tradingCapital: number;

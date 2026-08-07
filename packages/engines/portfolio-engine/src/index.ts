@@ -278,7 +278,7 @@ export class PortfolioEngine {
         }
       }
 
-      if (order.status === 'placed' || order.status === 'pending') {
+      if (order.status === 'pending') {
         allocatedCapital += order.allocatedCapital;
       }
     }

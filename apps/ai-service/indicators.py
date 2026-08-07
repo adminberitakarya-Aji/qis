@@ -12,6 +12,7 @@ def calculate_technical_features(candles: List[Dict[str, float]]) -> Dict[str, A
     - Volatility (24h & 7d)
     - Trend Direction (EMA 20 vs EMA 50)
     - Price Range Sideways Score
+    - Volume Analysis (Volume Trend, Volume-Price Correlation)
     """
     if not candles or len(candles) < 20:
         return {
@@ -22,6 +23,9 @@ def calculate_technical_features(candles: List[Dict[str, float]]) -> Dict[str, A
             "is_sideways": True,
             "trend": "neutral",
             "grid_suitability_score": 75.0,
+            "volume_24h": 0.0,
+            "volume_trend": "neutral",
+            "volume_price_correlation": 0.0,
         }
 
     df = pd.DataFrame(candles)
@@ -30,6 +34,10 @@ def calculate_technical_features(candles: List[Dict[str, float]]) -> Dict[str, A
     df["low"] = df["low"].astype(float)
     df["open"] = df["open"].astype(float)
     df["volume"] = df["volume"].astype(float)
+
+    # Calculate 24h volume (sum of last 24 candles)
+    last_24_vol = df.tail(min(24, len(df)))["volume"].sum()
+    volume_24h = float(last_24_vol)
 
     # 1. RSI (14)
     delta = df["close"].diff()
@@ -78,7 +86,30 @@ def calculate_technical_features(candles: List[Dict[str, float]]) -> Dict[str, A
 
     is_sideways = 3.0 <= range_spread_pct <= 12.0 and 40 <= current_rsi <= 60
 
-    # 6. Grid Suitability Score Calculation (0 - 100)
+    # 6. Volume Analysis
+    # Volume Trend: Compare recent volume to average
+    recent_volume = df.tail(6)["volume"].mean()  # Last 6 hours
+    avg_volume = df["volume"].mean()  # Full period average
+    if avg_volume > 0:
+        volume_ratio = recent_volume / avg_volume
+        if volume_ratio > 1.5:
+            volume_trend = "increasing"
+        elif volume_ratio < 0.7:
+            volume_trend = "decreasing"
+        else:
+            volume_trend = "neutral"
+    else:
+        volume_trend = "neutral"
+    
+    # Volume-Price Correlation (last 24 periods)
+    last_24_vol_series = df.tail(min(24, len(df)))["volume"]
+    last_24_price_series = df.tail(min(24, len(df)))["close"]
+    if len(last_24_vol_series) > 10 and last_24_vol_series.std() > 0 and last_24_price_series.std() > 0:
+        volume_price_corr = float(last_24_vol_series.corr(last_24_price_series))
+    else:
+        volume_price_corr = 0.0
+
+    # 7. Grid Suitability Score Calculation (0 - 100)
     # Ideal Grid conditions: Moderate volatility (3-8%), RSI neutral (40-60), Sideways/Range-bound, Healthy BB width
     score = 70.0
 
@@ -101,6 +132,20 @@ def calculate_technical_features(candles: List[Dict[str, float]]) -> Dict[str, A
     if is_sideways:
         score += 10.0
 
+    # Volume Component: Healthy volume supports grid execution
+    if volume_trend == "increasing":
+        score += 5.0  # Growing interest
+    elif volume_trend == "decreasing":
+        score -= 5.0  # Waning interest
+
+    # Volume-Price Correlation: Positive correlation in uptrend = healthy
+    if trend == "uptrend" and volume_price_corr > 0.3:
+        score += 3.0
+    elif trend == "downtrend" and volume_price_corr < -0.3:
+        score += 3.0  # Volume confirms downtrend
+    elif abs(volume_price_corr) < 0.1:
+        score += 2.0  # Low correlation in sideways = healthy chop
+
     final_score = float(max(50.0, min(98.0, score)))
 
     return {
@@ -111,4 +156,7 @@ def calculate_technical_features(candles: List[Dict[str, float]]) -> Dict[str, A
         "is_sideways": is_sideways,
         "trend": trend,
         "grid_suitability_score": round(final_score, 1),
+        "volume_24h": round(volume_24h, 2),
+        "volume_trend": volume_trend,
+        "volume_price_correlation": round(volume_price_corr, 3),
     }

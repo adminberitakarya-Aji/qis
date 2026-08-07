@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Headers, Param, Post, UnauthorizedException, UseGuards } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { ExecutionService } from './execution.service';
@@ -13,8 +14,9 @@ export class ExecutionController {
   async startExecution(
     @CurrentUser() user: { id: string },
     @Body() dto: StartExecutionDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    const data = await this.executionService.startExecution(user.id, dto);
+    const data = await this.executionService.startExecution(user.id, dto, idempotencyKey);
     return {
       success: true,
       message: 'Grid strategy execution started successfully',
@@ -26,8 +28,9 @@ export class ExecutionController {
   async stopExecution(
     @CurrentUser() user: { id: string },
     @Param('id') strategyId: string,
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    const data = await this.executionService.stopExecution(user.id, strategyId);
+    const data = await this.executionService.stopExecution(user.id, strategyId, idempotencyKey);
     return {
       success: true,
       message: 'Grid strategy execution stopped successfully',
@@ -65,7 +68,11 @@ export class ExecutionController {
 // Protected by a simple WORKER_SECRET header.
 // ============================================================
 
+// Internal worker controller is NOT throttled — it is already protected by
+// the x-worker-secret header and must respond to market triggers instantly.
+// Rate limiting on this path could block market orders during high volatility.
 @Controller('execution')
+@SkipThrottle()
 export class WorkerController {
   private readonly workerSecret =
     process.env.WORKER_SECRET || 'qis-internal-worker-secret-dev';
@@ -95,6 +102,20 @@ export class WorkerController {
     this.verifyWorkerSecret(secret);
     const data = await this.executionService.triggerGridOrder(
       body.orderId,
+      body.triggeredPrice,
+    );
+    return { success: true, data };
+  }
+
+  @Post('trigger-orders-batch')
+  async triggerGridOrdersBatch(
+    @Headers('x-worker-secret') secret: string,
+    @Body() body: { strategyId: string; orderIds: string[]; triggeredPrice: number },
+  ) {
+    this.verifyWorkerSecret(secret);
+    const data = await this.executionService.triggerGridOrdersBatch(
+      body.strategyId,
+      body.orderIds,
       body.triggeredPrice,
     );
     return { success: true, data };

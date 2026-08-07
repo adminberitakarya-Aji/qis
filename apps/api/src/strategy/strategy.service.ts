@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { StrategyEngine, DetailedSimulationResult } from '@qis/strategy-engine';
 import { Blueprint } from '@qis/shared';
 import { BuildStrategyDto } from './dto/build-strategy.dto';
@@ -19,7 +19,11 @@ export class StrategyService {
       sectionCount: dto.sectionCount,
       capitalAllocationPercent: dto.capitalAllocationPercent,
       riskPreference: dto.riskPreference,
+      floorAction: dto.floorAction,
     });
+
+    // Attach userId for ownership validation
+    blueprint.userId = userId;
 
     // Store in-memory map for instantaneous access
     this.blueprintStore.set(blueprint.id, blueprint);
@@ -52,10 +56,15 @@ export class StrategyService {
     return blueprint;
   }
 
-  async getBlueprint(id: string): Promise<Blueprint> {
+  async getBlueprint(userId: string, id: string): Promise<Blueprint> {
     // 1. Check in-memory store first
     if (this.blueprintStore.has(id)) {
-      return this.blueprintStore.get(id)!;
+      const bp = this.blueprintStore.get(id)!;
+      // Verify ownership — blueprint belongs to the requesting user
+      if (bp.userId && bp.userId !== userId) {
+        throw new ForbiddenException('You do not own this strategy blueprint');
+      }
+      return bp;
     }
 
     // 2. Fetch from Database
@@ -65,8 +74,14 @@ export class StrategyService {
       });
 
       if (dbBp) {
+        // Verify ownership — blueprint belongs to the requesting user
+        if (dbBp.userId !== userId) {
+          throw new ForbiddenException('You do not own this strategy blueprint');
+        }
+
         const blueprint: Blueprint = {
           id: dbBp.id,
+          userId: dbBp.userId,
           exchange: dbBp.exchange as any,
           pair: dbBp.pair,
           tradingCapital: dbBp.tradingCapital,
@@ -86,14 +101,15 @@ export class StrategyService {
         return blueprint;
       }
     } catch (err: any) {
+      if (err instanceof ForbiddenException) throw err;
       console.warn(`[StrategyService] Failed to query database for blueprint ${id}:`, err.message);
     }
 
     throw new NotFoundException(`Strategy Blueprint with ID ${id} not found`);
   }
 
-  async simulateStrategy(blueprintId: string): Promise<DetailedSimulationResult> {
-    const blueprint = await this.getBlueprint(blueprintId);
+  async simulateStrategy(userId: string, blueprintId: string): Promise<DetailedSimulationResult> {
+    const blueprint = await this.getBlueprint(userId, blueprintId);
     return this.strategyEngine.simulateStrategy(blueprint);
   }
 }
