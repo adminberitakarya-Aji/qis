@@ -66,4 +66,9 @@ export class RunBacktestDto {
   @IsOptional()
   @IsString()
   timeframe?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  maxCapitalPerMovementPercent?: number;
 }

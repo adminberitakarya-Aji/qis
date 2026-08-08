@@ -35,6 +35,11 @@ export interface BacktestInput {
   buyFeePercent?: number; // default 0.1%
   sellFeePercent?: number; // default 0.1%
   estimatedSlippagePercent?: number; // default 0.05%
+  // Capital Protection on Gaps (BUSINESS_RULES.md): caps how much capital can
+  // be deployed when a single candle's low crosses multiple grid levels at
+  // once (e.g. a flash-crash candle). Mirrors triggerGridOrdersBatch()'s
+  // production enforcement. Default 40 matches execution.service.ts's default.
+  maxCapitalPerMovementPercent?: number;
   // Optional: pre-fetched candles. If not provided, the engine fetches from the exchange.
   candles?: BacktestCandle[];
   // Optional: number of candles to fetch if candles are not provided
@@ -76,6 +81,12 @@ export interface BacktestResult {
   winningTrades: number;
   losingTrades: number;
   totalFeesUsdt: number;
+  // Capital Protection on Gaps: grid levels whose price was crossed by a
+  // candle's low but were skipped (never filled) because doing so would
+  // have exceeded maxCapitalPerMovementPercent of total capital for that
+  // single crossing. Mirrors production's abandon-on-skip behavior — a
+  // skipped level is not retried later, matching triggerGridOrdersBatch().
+  gapProtectionSkippedCount: number;
   // Outputs
   equityCurve: BacktestEquityPoint[];
   trades: BacktestTrade[];
@@ -136,6 +147,7 @@ export class BacktestEngine {
       buyFeePercent = 0.1,
       sellFeePercent = 0.1,
       estimatedSlippagePercent = 0.05,
+      maxCapitalPerMovementPercent = 40,
       candleLimit = 500,
       timeframe = '1h',
     } = input;
@@ -180,6 +192,13 @@ export class BacktestEngine {
         buyTimestamp: 0,
         buyFee: 0,
         quantity: 0,
+        // Set once this level's price has been crossed by a candle's low,
+        // whether or not it actually filled (see Capital Protection on
+        // Gaps below). A resolved level is never reconsidered — matching
+        // production, where the worker removes a crossed level from its
+        // pending set the moment it's detected, regardless of whether the
+        // API executed it or skipped it for capital-limit reasons.
+        resolvedForCrossing: false,
       }))
     );
 
@@ -191,27 +210,52 @@ export class BacktestEngine {
     let losingTrades = 0;
     let peakEquity = tradingCapital;
     let maxDrawdown = 0;
+    let gapProtectionSkippedCount = 0;
+    const maxCapitalUsdt = (tradingCapital * maxCapitalPerMovementPercent) / 100;
     const equityCurve: BacktestEquityPoint[] = [];
     const trades: BacktestTrade[] = [];
 
     for (const candle of candles) {
       let currentEquity = tradingCapital + netProfit;
 
-      for (const order of orderStates) {
-        // BUY fill: candle low crosses or touches grid level price
-        if (!order.isHolding && candle.low <= order.gridPrice) {
-          // Apply slippage: buy executes at grid price + slippage
-          const buyPrice = order.gridPrice * (1 + estimatedSlippagePercent / 100);
-          const buyFee = order.allocatedCapitalUsdt * (buyFeePercent / 100);
-          order.isHolding = true;
-          order.buyPrice = buyPrice;
-          order.buyTimestamp = candle.timestamp;
-          order.buyFee = buyFee;
-          order.quantity = order.allocatedCapitalUsdt / buyPrice;
-          totalFees += buyFee;
-          totalTrades++;
-        }
+      // Capital Protection on Gaps (BUSINESS_RULES.md): a single candle's
+      // low can cross several grid levels at once (a gap/flash-crash
+      // candle). Production (triggerGridOrdersBatch) caps how much capital
+      // is deployed for one such crossing at maxCapitalPerMovementPercent
+      // of total capital, processing candidates in globalOrderIndex order
+      // and permanently skipping whatever doesn't fit the budget — without
+      // this, a backtest would look artificially better than production
+      // could actually achieve during a real crash, since it would happily
+      // fill every crossed level in one candle regardless of size.
+      const crossedThisCandle = orderStates
+        .filter((o) => !o.isHolding && !o.resolvedForCrossing && candle.low <= o.gridPrice)
+        .sort((a, b) => a.globalOrderIndex - b.globalOrderIndex);
 
+      let accumulatedCapital = 0;
+      for (const order of crossedThisCandle) {
+        // This level is "used up" for this crossing the moment price
+        // touches it — whether or not it ends up filling below.
+        order.resolvedForCrossing = true;
+
+        if (accumulatedCapital + order.allocatedCapitalUsdt > maxCapitalUsdt) {
+          gapProtectionSkippedCount++;
+          continue;
+        }
+        accumulatedCapital += order.allocatedCapitalUsdt;
+
+        // Apply slippage: buy executes at grid price + slippage
+        const buyPrice = order.gridPrice * (1 + estimatedSlippagePercent / 100);
+        const buyFee = order.allocatedCapitalUsdt * (buyFeePercent / 100);
+        order.isHolding = true;
+        order.buyPrice = buyPrice;
+        order.buyTimestamp = candle.timestamp;
+        order.buyFee = buyFee;
+        order.quantity = order.allocatedCapitalUsdt / buyPrice;
+        totalFees += buyFee;
+        totalTrades++;
+      }
+
+      for (const order of orderStates) {
         // SELL fill: candle high crosses or touches Take Profit price
         if (order.isHolding && candle.high >= order.estimatedTpPrice) {
           // Apply slippage: sell executes at TP price - slippage
@@ -285,6 +329,7 @@ export class BacktestEngine {
       winningTrades,
       losingTrades,
       totalFeesUsdt: Number(totalFees.toFixed(6)),
+      gapProtectionSkippedCount,
       equityCurve,
       trades,
       grid: {
@@ -318,6 +363,7 @@ export class BacktestEngine {
       candles: options?.candles,
       candleLimit: options?.candleLimit,
       timeframe: options?.timeframe,
+      maxCapitalPerMovementPercent: blueprint.maxCapitalPerMovementPercent,
       buyFeePercent: options?.buyFeePercent,
       sellFeePercent: options?.sellFeePercent,
       estimatedSlippagePercent: options?.estimatedSlippagePercent,

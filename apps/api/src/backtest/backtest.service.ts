@@ -35,6 +35,7 @@ export class BacktestService {
       estimatedSlippagePercent: dto.estimatedSlippagePercent,
       candleLimit: dto.candleLimit,
       timeframe: dto.timeframe,
+      maxCapitalPerMovementPercent: dto.maxCapitalPerMovementPercent,
     });
 
     // Persist the ingested candles to the HistoricalCandle table.

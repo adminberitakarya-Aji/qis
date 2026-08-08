@@ -65,16 +65,24 @@ export class RiskService {
       throw new NotFoundException('Exchange account not found');
     }
 
-    // Aggregate committed capital and active strategy count for this account
+    // Aggregate committed capital and active strategy count for this USER
+    // across ALL of their exchange accounts — not just the one account
+    // being used for this new strategy. RiskConfig's limits
+    // (maxCapitalPerUser, maxConcurrentStrategiesPerUser, maxCapitalPerPair)
+    // are documented as user-wide, so scoping these queries to a single
+    // exchangeAccountId would let a user with multiple exchange accounts
+    // (e.g. Binance + Bybit) silently exceed the limit by spreading
+    // strategies across accounts, each individually under the threshold.
     const aggregate = await this.prisma.gridStrategy.aggregate({
-      where: { exchangeAccountId: account.id, status: 'active' },
+      where: { userId, status: 'active' },
       _sum: { capital: true },
       _count: { _all: true },
     });
 
-    // Aggregate committed capital for the same pair on this account
+    // Aggregate committed capital for the same pair, also user-wide (same
+    // reasoning — maxCapitalPerPair is a per-user limit, not per-account).
     const pairAggregate = await this.prisma.gridStrategy.aggregate({
-      where: { exchangeAccountId: account.id, status: 'active', pair },
+      where: { userId, status: 'active', pair },
       _sum: { capital: true },
     });
 

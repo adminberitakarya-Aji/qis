@@ -122,6 +122,100 @@ describe('BacktestEngine', () => {
     });
   });
 
+  describe('Capital Protection on Gaps', () => {
+    // A single crash candle whose low drops far enough to cross every grid
+    // level at once (all 5 levels across both sections).
+    function makeCrashCandles(): BacktestCandle[] {
+      return [
+        // First candle establishes the reference price the grid is built from.
+        { timestamp: 1700000000000, open: 100, high: 101, low: 99, close: 100, volume: 1000 },
+        // Second candle crashes hard enough to cross every grid level.
+        { timestamp: 1700003600000, open: 100, high: 100, low: 50, close: 60, volume: 5000 },
+      ];
+    }
+
+    it('permanently skips levels beyond maxCapitalPerMovementPercent instead of filling all of them', async () => {
+      const candles = makeCrashCandles();
+
+      const unprotected = await engine.runBacktest({
+        exchange: 'binance',
+        pair: 'BTC/USDT',
+        tradingCapital: 10000,
+        sections,
+        candles,
+        maxCapitalPerMovementPercent: 100, // effectively no cap
+      });
+
+      const protectedResult = await engine.runBacktest({
+        exchange: 'binance',
+        pair: 'BTC/USDT',
+        tradingCapital: 10000,
+        sections,
+        candles,
+        maxCapitalPerMovementPercent: 20, // tight cap — only a couple of levels fit
+      });
+
+      // Without a meaningful cap, the crash candle should fill every level
+      // it crosses in one shot.
+      expect(unprotected.gapProtectionSkippedCount).toBe(0);
+
+      // With a tight cap, some levels crossed by the same candle must be
+      // left unfilled rather than all executed at once.
+      expect(protectedResult.gapProtectionSkippedCount).toBeGreaterThan(0);
+
+      // The protected run must never deploy more buy-side capital in that
+      // single crossing than the configured budget allows.
+      const totalBoughtGridsProtected = protectedResult.grid.totalOrderCount - protectedResult.gapProtectionSkippedCount;
+      expect(totalBoughtGridsProtected).toBeLessThan(unprotected.grid.totalOrderCount);
+    });
+
+    it('never retries a gap-skipped level later, even if price stays below it', async () => {
+      // After the crash, price stays low for many candles — if skipped
+      // levels were retried, they'd eventually all fill. Production never
+      // retries them (the worker abandons a crossed-but-skipped level), so
+      // the backtest must match: gapProtectionSkippedCount should reflect
+      // only the ONE crossing event, not grow further as price lingers low.
+      const candles = makeCrashCandles();
+      for (let i = 0; i < 20; i++) {
+        candles.push({
+          timestamp: 1700003600000 + (i + 1) * 3600_000,
+          open: 60,
+          high: 61,
+          low: 59,
+          close: 60,
+          volume: 1000,
+        });
+      }
+
+      const result = await engine.runBacktest({
+        exchange: 'binance',
+        pair: 'BTC/USDT',
+        tradingCapital: 10000,
+        sections,
+        candles,
+        maxCapitalPerMovementPercent: 20,
+      });
+
+      const skippedAtCrash = result.gapProtectionSkippedCount;
+      expect(skippedAtCrash).toBeGreaterThan(0);
+
+      // Re-run with the lingering-low candles removed (crash candle only)
+      // to confirm the skip count is identical — proving the later candles
+      // (where low=59, still below the skipped levels' grid prices) did not
+      // cause any additional skip/fill activity for those same levels.
+      const crashOnly = await engine.runBacktest({
+        exchange: 'binance',
+        pair: 'BTC/USDT',
+        tradingCapital: 10000,
+        sections,
+        candles: candles.slice(0, 2),
+        maxCapitalPerMovementPercent: 20,
+      });
+
+      expect(crashOnly.gapProtectionSkippedCount).toBe(skippedAtCrash);
+    });
+  });
+
   describe('ingestHistoricalCandles', () => {
     it('fetches candles from the market engine', async () => {
       const mockCandles = [

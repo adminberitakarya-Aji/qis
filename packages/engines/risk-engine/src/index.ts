@@ -48,11 +48,11 @@ export interface RiskCheckInput {
   pair: string;
   /** Capital requested for the new strategy (USDT). */
   capital: number;
-  /** Total capital already committed to active strategies on this exchange account (USDT). */
+  /** Total capital already committed to active strategies across all of this user's exchange accounts (USDT). */
   committedCapital: number;
-  /** Number of currently active strategies on this exchange account. */
+  /** Number of currently active strategies across all of this user's exchange accounts. */
   activeStrategyCount: number;
-  /** Total capital already committed to the same pair on this exchange account (USDT). */
+  /** Total capital already committed to the same pair across all of this user's exchange accounts (USDT). */
   committedCapitalOnPair: number;
   /** Total free (uncommitted) balance on the exchange account (USDT). Optional — if omitted, the capital check is skipped. */
   freeBalanceUsdt?: number;
