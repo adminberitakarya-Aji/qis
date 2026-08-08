@@ -45,6 +45,17 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Generate Prisma Client
+        # Without this, @prisma/client's generated types may be incomplete
+        # during lint/typecheck (the model types come from this generation
+        # step, not from source). ESLint's typed rules in particular need
+        # accurate types to avoid false positives/negatives — an incomplete
+        # client can make legitimate code (e.g. a necessary `as any` cast
+        # bridging a raw DB string to a narrower union type) look like an
+        # "unnecessary" assertion, or vice versa. This only needs the
+        # schema file, not a live database connection.
+        run: pnpm --filter @qis/api exec prisma generate
+
       - name: Run lint
         run: pnpm lint
 

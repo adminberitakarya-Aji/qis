@@ -37,6 +37,7 @@ module.exports = {
     '^@qis/market-engine$': '<rootDir>/../../../packages/engines/market-engine/dist/index.js',
     '^@qis/notification-engine$': '<rootDir>/../../../packages/engines/notification-engine/dist/index.js',
     '^@qis/portfolio-engine$': '<rootDir>/../../../packages/engines/portfolio-engine/dist/index.js',
+    '^@qis/risk-engine$': '<rootDir>/../../../packages/engines/risk-engine/dist/index.js',
     '^@qis/strategy-engine$': '<rootDir>/../../../packages/engines/strategy-engine/dist/index.js',
     '^@qis/providers-ai$': '<rootDir>/../../../packages/providers/ai/dist/index.js',
     '^@qis/providers-exchange$': '<rootDir>/../../../packages/providers/exchange/dist/index.js',
