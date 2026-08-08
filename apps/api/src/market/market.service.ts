@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
-import { MarketEngine, MarketStatistics } from '@qis/market-engine';
-import { Candlestick, MarketTicker, OrderBook } from '@qis/exchange-engine';
+import { MarketEngine, type MarketStatistics } from '@qis/market-engine';
+import type { Candlestick, MarketTicker, OrderBook } from '@qis/exchange-engine';
 
 @Injectable()
 export class MarketService {

@@ -1,6 +1,6 @@
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { StrategyEngine, DetailedSimulationResult } from '@qis/strategy-engine';
-import { Blueprint } from '@qis/shared';
+import { StrategyEngine, type DetailedSimulationResult } from '@qis/strategy-engine';
+import type { Blueprint } from '@qis/shared';
 import { BuildStrategyDto } from './dto/build-strategy.dto';
 import { PrismaService } from '../prisma/prisma.service';
 

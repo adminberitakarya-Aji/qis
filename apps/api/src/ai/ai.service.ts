@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { AiEngine, PairRecommendation, AiStrategyRecommendation } from '@qis/ai-engine';
+import { AiEngine, type PairRecommendation, type AiStrategyRecommendation } from '@qis/ai-engine';
 
 @Injectable()
 export class AiService {
