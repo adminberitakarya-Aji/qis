@@ -37,6 +37,7 @@
     "@qis/market-engine": "workspace:*",
     "@qis/notification-engine": "workspace:*",
     "@qis/portfolio-engine": "workspace:*",
+    "@qis/risk-engine": "workspace:*",
     "@qis/shared": "workspace:*",
     "@qis/strategy-engine": "workspace:*",
     "bcrypt": "^5.1.1",

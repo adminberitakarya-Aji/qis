@@ -28,7 +28,7 @@ Two hard constraints shaped every decision below:
 | `pnpm typecheck` / `pnpm build` | Passes clean end-to-end (verified after fixing a pre-existing `executeOrder()` argument-count bug in `execution-engine`) |
 | Observability | Alerting only (Phase 0.1) — Telegram ops channel live for worker crashes, `triggerGridOrder`/`stopExecution` errors, exchange retry exhaustion, and Postgres connection errors. No metrics/tracing/dashboards yet (intentionally deferred). |
 | CI | Live (Phase 0.2) — GitHub Actions runs `lint → typecheck → test → build` on every push/PR to `master`/`main`, plus non-blocking `pnpm audit`. |
-| Backtest / Risk Engine / Marketplace | Not started |
+| Backtest / Risk Engine / Marketplace | Backtest (Phase 1) and Risk Engine pre-trade checks (Phase 2) implemented. Marketplace (Phase 3) not started. |
 
 The honest framing: **the trading core is more solid than the surrounding safety net.** That inversion is exactly what Phase 0 below exists to fix, before any new engine gets added on top.
 
@@ -88,9 +88,9 @@ This is v2.0's section 2.1, resized. The dependency chain matters: **Risk Engine
 
 v2.0 splits this into pre-trade checks (sync) and real-time monitoring (async, event-driven) plus a full risk dashboard. Ship only the sync half first:
 
-- [ ] Capital allocation check against Portfolio Engine's uncommitted balance (this may already partially exist — verify before building)
-- [ ] Max concurrent strategies per user, max capital per pair — simple config-driven limits, not a correlation-risk model
-- [ ] Reuse Phase 0's alerting channel for risk events instead of building a separate risk dashboard — a Telegram message "Strategy blocked: capital limit exceeded" is enough until there's a reason to visualize it
+- [x] Capital allocation check against Portfolio Engine's uncommitted balance (this may already partially exist — verify before building)
+- [x] Max concurrent strategies per user, max capital per pair — simple config-driven limits, not a correlation-risk model
+- [x] Reuse Phase 0's alerting channel for risk events instead of building a separate risk dashboard — a Telegram message "Strategy blocked: capital limit exceeded" is enough until there's a reason to visualize it
 
 **Deferred**: correlation risk modeling (BTC/ETH exposure), VaR/expected shortfall calculations, a dedicated risk-score UI. These require either more capital at stake or more users than currently exist to justify the build.
 

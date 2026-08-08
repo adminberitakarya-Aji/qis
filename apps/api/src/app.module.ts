@@ -11,6 +11,7 @@ import { ExecutionModule } from './execution/execution.module';
 import { PortfolioModule } from './portfolio/portfolio.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { BacktestModule } from './backtest/backtest.module';
+import { RiskModule } from './risk/risk.module';
 import { NotificationModule } from './notification/notification.module';
 import { OpsAlertingModule } from './ops-alerting/ops-alerting.module';
 import { PrismaModule } from './prisma/prisma.module';
@@ -49,6 +50,7 @@ import { OpsAlertingService } from './ops-alerting/ops-alerting.service';
     PortfolioModule,
     AnalyticsModule,
     BacktestModule,
+    RiskModule,
     NotificationModule,
     OpsAlertingModule,
   ],

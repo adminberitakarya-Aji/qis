@@ -197,4 +197,30 @@ export class OpsAlertingService implements OnModuleInit {
       details: { ...details.context, source: details.source, stack: details.stack ?? '' },
     });
   }
+
+  /**
+   * Risk Engine blocked a strategy launch (pre-trade check failed).
+   * Per ROADMAP.md Phase 2: reuse Phase 0's alerting channel for risk
+   * events instead of building a separate risk dashboard.
+   */
+  async riskCheckBlocked(details: {
+    userId: string;
+    exchangeAccountId: string;
+    pair: string;
+    capital: number;
+    reasons: string[];
+  }): Promise<void> {
+    return this.warning({
+      event: 'risk_check_blocked',
+      title: 'Strategy Blocked: Risk Check Failed',
+      message: `Strategy launch blocked for ${details.pair} (${details.capital} USDT) on account ${details.exchangeAccountId}`,
+      details: {
+        userId: details.userId,
+        exchangeAccountId: details.exchangeAccountId,
+        pair: details.pair,
+        capital: details.capital,
+        reasons: details.reasons.join(', '),
+      },
+    });
+  }
 }

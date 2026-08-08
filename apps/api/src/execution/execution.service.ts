@@ -16,6 +16,7 @@ import type { Blueprint } from '@qis/shared';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { IdempotencyService } from '../idempotency/idempotency.service';
 import { OpsAlertingService } from '../ops-alerting/ops-alerting.service';
+import { RiskService } from '../risk/risk.service';
 import { createServiceLogger } from '@qis/logger';
 
 @Injectable()
@@ -31,6 +32,7 @@ export class ExecutionService {
     private readonly realtime: RealtimeGateway,
     private readonly idempotency: IdempotencyService,
     private readonly opsAlerting: OpsAlertingService,
+    private readonly riskService: RiskService,
   ) {
     // Reuse the shared Exchange Engine singleton so that all decryption stays
     // inside the same Master Key boundary. Execution Engine itself never
@@ -77,6 +79,24 @@ export class ExecutionService {
 
     if (!account) throw new NotFoundException('Exchange account not found');
     if (account.userId !== userId) throw new ForbiddenException('You do not own this exchange account');
+
+    // 3.5. Pre-trade risk check (ROADMAP.md Phase 2).
+    //      Blocks the strategy launch if any risk limit is exceeded.
+    //      The RiskService sends an ops alert via Phase 0's Telegram channel
+    //      when a check is blocked.
+    const riskOutcome = await this.riskService.checkPreTrade(
+      userId,
+      account.id,
+      blueprint.pair,
+      blueprint.tradingCapital,
+    );
+
+    if (riskOutcome.blocked) {
+      const reasons = riskOutcome.reasons.map((r) => r.code).join(', ');
+      throw new BadRequestException(
+        `Strategy blocked by risk check: ${reasons}`,
+      );
+    }
 
     // 4. Get current market price to anchor grid levels (Market Engine, no creds needed)
     let currentPrice = 100;
