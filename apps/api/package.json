@@ -36,6 +36,7 @@
     "@qis/logger": "workspace:*",
     "@qis/market-engine": "workspace:*",
     "@qis/notification-engine": "workspace:*",
+    "@qis/paper-exchange-engine": "workspace:*",
     "@qis/portfolio-engine": "workspace:*",
     "@qis/risk-engine": "workspace:*",
     "@qis/shared": "workspace:*",

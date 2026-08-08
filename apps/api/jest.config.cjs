@@ -36,6 +36,7 @@ module.exports = {
     '^@qis/grid-engine$': '<rootDir>/../../../packages/engines/grid-engine/dist/index.js',
     '^@qis/market-engine$': '<rootDir>/../../../packages/engines/market-engine/dist/index.js',
     '^@qis/notification-engine$': '<rootDir>/../../../packages/engines/notification-engine/dist/index.js',
+    '^@qis/paper-exchange-engine$': '<rootDir>/../../../packages/engines/paper-exchange-engine/dist/index.js',
     '^@qis/portfolio-engine$': '<rootDir>/../../../packages/engines/portfolio-engine/dist/index.js',
     '^@qis/risk-engine$': '<rootDir>/../../../packages/engines/risk-engine/dist/index.js',
     '^@qis/strategy-engine$': '<rootDir>/../../../packages/engines/strategy-engine/dist/index.js',

@@ -29,6 +29,8 @@ model User {
   gridStrategies       GridStrategy[]
   blueprints           StrategyBlueprint[]
   notificationConfig   NotificationConfig?
+  paperAccounts        PaperAccount[]
+  paperStrategies      PaperStrategy[]
 }
 
 // ============================================================
@@ -102,6 +104,7 @@ model StrategyBlueprint {
 
   user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
   gridStrategies GridStrategy[]
+  paperStrategies PaperStrategy[]
 
   @@index([userId])
   @@index([expiresAt])
@@ -245,6 +248,82 @@ model HistoricalCandle {
   @@unique([exchange, pair, timeframe, timestamp]) // Prevent duplicate candles on re-ingestion
   @@index([exchange, pair, timeframe])
   @@index([exchange, pair, timeframe, timestamp]) // Composite: range queries for backtest
+}
+
+// ============================================================
+// Paper Trading (Virtual Balance, No Real Money)
+// ============================================================
+
+model PaperAccount {
+  id             String   @id @default(cuid())
+  userId         String
+  exchange       String // 'binance' | 'bybit'
+  label          String
+  virtualBalance Float    @default(100) // $100 modal virtual
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  paperStrategies PaperStrategy[]
+
+  @@index([userId])
+  @@unique([userId, exchange, label])
+}
+
+model PaperStrategy {
+  id             String   @id @default(cuid())
+  userId         String
+  paperAccountId String
+  blueprintId    String
+  exchange       String // 'binance' | 'bybit'
+  pair           String // e.g. 'BTC/USDT'
+  capital        Float // Total virtual trading capital in USDT
+  status         String   @default("active") // 'active' | 'stopping' | 'stopped' | 'completed' | 'error'
+  startedAt      DateTime @default(now())
+  stoppedAt      DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user         User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  paperAccount PaperAccount    @relation(fields: [paperAccountId], references: [id])
+  blueprint    StrategyBlueprint @relation(fields: [blueprintId], references: [id])
+  paperOrders  PaperOrder[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([userId, status])
+}
+
+model PaperOrder {
+  id               String   @id @default(cuid())
+  paperStrategyId  String
+  sectionIndex     Int
+  orderIndex       Int // Within section
+  globalOrderIndex Int
+  clientOrderId    String   @unique // Idempotency key
+  gridPrice        Float // Target buy price level
+  tpPrice          Float // Take profit price
+  allocatedCapital Float // Allocated capital in USDT
+  estimatedQuantity Float // Estimated token quantity
+  status           String   @default("pending")
+  // 'pending' | 'filled' | 'tp_placed' | 'tp_filled' | 'canceled' | 'error'
+  buyFilledPrice   Float? // Simulated fill price
+  buyFilledQuantity Float?
+  buyFee           Float?
+  tpFilledPrice    Float?
+  tpFee            Float?
+  realizedPnl      Float?
+  filledAt         DateTime?
+  tpFilledAt       DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  paperStrategy PaperStrategy @relation(fields: [paperStrategyId], references: [id], onDelete: Cascade)
+
+  @@index([paperStrategyId])
+  @@index([status])
+  @@index([clientOrderId])
+  @@index([paperStrategyId, status])
 }
 
 // ============================================================

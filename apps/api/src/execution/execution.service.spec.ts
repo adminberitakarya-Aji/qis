@@ -6,6 +6,8 @@ import type { RealtimeGateway } from '../realtime/realtime.gateway';
 import type { IdempotencyService } from '../idempotency/idempotency.service';
 import type { OpsAlertingService } from '../ops-alerting/ops-alerting.service';
 import type { RiskService } from '../risk/risk.service';
+import type { NotificationService } from '../notification/notification.service';
+import type { ConfigService } from '@nestjs/config';
 import type { ExchangeEngine } from '@qis/exchange-engine';
 
 /**
@@ -122,6 +124,13 @@ function buildService(prismaMock: any) {
   // this mock is never actually invoked.
   const exchangeEngineMock = {} as unknown as ExchangeEngine;
 
+  const notificationServiceMock = {
+    sendEvent: jest.fn(),
+  } as unknown as NotificationService;
+  const configServiceMock = {
+    get: jest.fn(),
+  } as unknown as ConfigService;
+
   const service = new ExecutionService(
     prismaMock as unknown as PrismaService,
     exchangeEngineMock,
@@ -130,6 +139,8 @@ function buildService(prismaMock: any) {
     idempotencyMock,
     opsAlertingMock,
     riskServiceMock,
+    notificationServiceMock,
+    configServiceMock,
   );
 
   const executionEngineMock = {

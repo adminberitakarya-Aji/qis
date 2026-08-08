@@ -8,15 +8,20 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { StrategyService } from '../strategy/strategy.service';
 import { StartExecutionDto } from './dto/start-execution.dto';
+import { StartPaperExecutionDto } from './dto/start-paper-execution.dto';
 import { EXCHANGE_ENGINE } from '../engines/engines.module';
 import { ExchangeEngine, type DecryptContext } from '@qis/exchange-engine';
 import { ExecutionEngine, type ExecutionOrderState } from '@qis/execution-engine';
+import { PaperExchangeEngine } from '@qis/paper-exchange-engine';
 import { GridEngine } from '@qis/grid-engine';
 import type { Blueprint } from '@qis/shared';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { IdempotencyService } from '../idempotency/idempotency.service';
 import { OpsAlertingService } from '../ops-alerting/ops-alerting.service';
 import { RiskService } from '../risk/risk.service';
+import { NotificationService } from '../notification/notification.service';
+import { ConfigService } from '@nestjs/config';
+import type { NotificationConfig } from '@qis/notification-engine';
 import { createServiceLogger } from '@qis/logger';
 
 @Injectable()
@@ -24,6 +29,7 @@ export class ExecutionService {
   private readonly logger = createServiceLogger('qis-api:execution');
   private executionEngine: ExecutionEngine;
   private gridEngine = new GridEngine();
+  private paperExchangeEngine = new PaperExchangeEngine();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -33,11 +39,26 @@ export class ExecutionService {
     private readonly idempotency: IdempotencyService,
     private readonly opsAlerting: OpsAlertingService,
     private readonly riskService: RiskService,
+    private readonly notificationService: NotificationService,
+    private readonly configService: ConfigService,
   ) {
     // Reuse the shared Exchange Engine singleton so that all decryption stays
     // inside the same Master Key boundary. Execution Engine itself never
     // touches plaintext; it forwards the ciphertext to Exchange Engine.
     this.executionEngine = new ExecutionEngine(exchangeEngine);
+  }
+
+  /**
+   * Returns the Telegram notification config from environment variables,
+   * or null if not configured. Used for user-facing trading notifications.
+   */
+  private getTelegramConfig(): NotificationConfig | null {
+    const botToken = this.configService.get<string>('TELEGRAM_BOT_TOKEN');
+    const chatId = this.configService.get<string>('TELEGRAM_CHAT_ID');
+    if (botToken && chatId) {
+      return { telegram: { botToken, chatId } };
+    }
+    return null;
   }
 
   async startExecution(userId: string, dto: StartExecutionDto, idempotencyKey?: string) {
@@ -161,6 +182,16 @@ export class ExecutionService {
     );
 
     await this.prisma.gridOrder.createMany({ data: gridOrderData });
+
+    // Send Telegram notification when real strategy starts
+    const telegramConfig = this.getTelegramConfig();
+    if (telegramConfig) {
+      await this.notificationService.sendEvent(
+        'strategy_started',
+        { pair: blueprint.pair, capital: blueprint.tradingCapital, mode: 'real' },
+        telegramConfig,
+      );
+    }
 
     this.logger.info('Strategy started in trigger-based mode', {
       strategyId: gridStrategy.id,
@@ -327,6 +358,16 @@ export class ExecutionService {
     });
 
     const result = { strategyId: updated.id, status: updated.status, stoppedAt: updated.stoppedAt };
+
+    // Send Telegram notification when real strategy stops
+    const telegramConfig = this.getTelegramConfig();
+    if (telegramConfig) {
+      await this.notificationService.sendEvent(
+        'strategy_stopped',
+        { strategyId: updated.id, pair: updated.pair, mode: 'real' },
+        telegramConfig,
+      );
+    }
 
     // Store idempotency response
     if (idempotencyKey) {
@@ -700,6 +741,22 @@ export class ExecutionService {
         tpExchangeOrderId: fillResult.tpExchangeOrderId,
       });
 
+      // Send Telegram notification when real BUY order filled
+      const telegramConfig = this.getTelegramConfig();
+      if (telegramConfig) {
+        await this.notificationService.sendEvent(
+          'order_filled',
+          {
+            orderId,
+            pair: strategy.pair,
+            filledPrice: fillResult.filledPrice ?? triggeredPrice,
+            filledQuantity: fillResult.filledQuantity ?? order.estimatedQuantity,
+            mode: 'real',
+          },
+          telegramConfig,
+        );
+      }
+
       return {
         orderId,
         status: fillResult.tpExchangeOrderId ? 'tp_placed' : 'filled',
@@ -724,5 +781,461 @@ export class ExecutionService {
 
       throw err; // Re-throw to let the caller handle it
     }
+  }
+
+  // ============================================================
+  // Paper Trading (Virtual Balance, No Real Money)
+  // ============================================================
+
+  /**
+   * Starts a paper trading strategy using a virtual balance ($100 default).
+   * No API keys, no real money, no exchange interaction.
+   * Uses live market prices via the Worker for realistic fills.
+   */
+  async startPaperExecution(userId: string, dto: StartPaperExecutionDto) {
+    // 1. Validate Blueprint exists, is not expired, and belongs to the user
+    const blueprint: Blueprint = await this.strategyService.getBlueprint(userId, dto.blueprintId);
+
+    const now = new Date();
+    if (blueprint.expiresAt && new Date(blueprint.expiresAt) < now) {
+      throw new BadRequestException(
+        'Strategy Blueprint has expired. Please generate a new strategy.',
+      );
+    }
+
+    // 2. Get or create paper account (default $100 virtual balance)
+    let paperAccount = await this.prisma.paperAccount.findFirst({
+      where: { userId, exchange: blueprint.exchange },
+    });
+    if (!paperAccount) {
+      paperAccount = await this.prisma.paperAccount.create({
+        data: {
+          userId,
+          exchange: blueprint.exchange,
+          label: 'Paper Trading',
+          virtualBalance: 100,
+        },
+      });
+    }
+
+    // 3. Check virtual balance is sufficient
+    if (paperAccount.virtualBalance < blueprint.tradingCapital) {
+      throw new BadRequestException(
+        `Virtual balance insufficient for this strategy. Available: $${paperAccount.virtualBalance}, Required: $${blueprint.tradingCapital}`,
+      );
+    }
+
+    // 4. Create PaperStrategy record
+    const paperStrategy = await this.prisma.paperStrategy.create({
+      data: {
+        userId,
+        paperAccountId: paperAccount.id,
+        blueprintId: blueprint.id,
+        exchange: blueprint.exchange,
+        pair: blueprint.pair,
+        capital: blueprint.tradingCapital,
+        status: 'active',
+      },
+    });
+
+    // 5. Get current market price to anchor grid levels
+    let currentPrice = 100;
+    try {
+      const { ExchangeEngine: ExchangeEngineClass } = await import('@qis/exchange-engine');
+      const publicTicker = new ExchangeEngineClass();
+      const ticker = await publicTicker.fetchTicker(
+        blueprint.exchange as 'binance' | 'bybit',
+        blueprint.pair,
+      );
+      currentPrice = ticker.last || currentPrice;
+    } catch {
+      // fallback price
+    }
+
+    // 6. Build grid from blueprint
+    const gridResult = this.gridEngine.buildGrid({
+      currentPrice,
+      totalCapital: blueprint.tradingCapital,
+      sections: blueprint.sections.map((s) => ({
+        allocationPercent: s.allocationPercent,
+        gridCount: s.gridCount,
+        gridDistancePercent: s.gridDistancePercent,
+        sectionGapPercent: s.sectionGapPercent,
+        minNetProfitPercent: s.minNetProfitPercent,
+      })),
+    });
+
+    // 7. Persist PaperOrder records with 'pending' status
+    const paperOrderData = gridResult.sections.flatMap((section) =>
+      section.orders.map((order) => ({
+        paperStrategyId: paperStrategy.id,
+        sectionIndex: order.sectionIndex,
+        orderIndex: order.orderIndex,
+        globalOrderIndex: order.globalOrderIndex,
+        clientOrderId: `${paperStrategy.id}_g${order.globalOrderIndex}`,
+        gridPrice: order.gridPrice,
+        tpPrice: order.estimatedTpPrice,
+        allocatedCapital: order.allocatedCapitalUsdt,
+        estimatedQuantity: order.estimatedQuantity,
+        status: 'pending',
+      })),
+    );
+
+    await this.prisma.paperOrder.createMany({ data: paperOrderData });
+
+    // 8. Deduct capital from virtual balance
+    await this.prisma.paperAccount.update({
+      where: { id: paperAccount.id },
+      data: { virtualBalance: paperAccount.virtualBalance - blueprint.tradingCapital },
+    });
+
+    // Send Telegram notification when paper strategy starts
+    const telegramConfig = this.getTelegramConfig();
+    if (telegramConfig) {
+      await this.notificationService.sendEvent(
+        'strategy_started',
+        { pair: blueprint.pair, capital: blueprint.tradingCapital, mode: 'paper' },
+        telegramConfig,
+      );
+    }
+
+    this.logger.info('Paper trading strategy started', {
+      strategyId: paperStrategy.id,
+      pair: blueprint.pair,
+      capital: blueprint.tradingCapital,
+      gridLevels: paperOrderData.length,
+    });
+
+    return {
+      strategyId: paperStrategy.id,
+      blueprintId: blueprint.id,
+      pair: blueprint.pair,
+      exchange: blueprint.exchange,
+      capital: blueprint.tradingCapital,
+      status: 'active',
+      virtualBalanceRemaining: paperAccount.virtualBalance - blueprint.tradingCapital,
+      ordersSummary: {
+        total: paperOrderData.length,
+        pending: paperOrderData.length,
+      },
+    };
+  }
+
+  /**
+   * Stops a paper trading strategy.
+   * Any open paper orders are marked 'canceled'.
+   */
+  async stopPaperExecution(userId: string, strategyId: string) {
+    const claim = await this.prisma.paperStrategy.updateMany({
+      where: { id: strategyId, userId, status: 'active' },
+      data: { status: 'stopped', stoppedAt: new Date() },
+    });
+
+    if (claim.count === 0) {
+      const existing = await this.prisma.paperStrategy.findUnique({ where: { id: strategyId } });
+      if (!existing) throw new NotFoundException('Paper strategy not found');
+      if (existing.userId !== userId) throw new ForbiddenException('You do not own this strategy');
+      throw new BadRequestException('Paper strategy is not active');
+    }
+
+    // Cancel all pending / tp_placed paper orders
+    await this.prisma.paperOrder.updateMany({
+      where: { paperStrategyId: strategyId, status: { in: ['pending', 'tp_placed'] } },
+      data: { status: 'canceled' },
+    });
+
+    // Send Telegram notification when paper strategy stops
+    const telegramConfig = this.getTelegramConfig();
+    if (telegramConfig) {
+      await this.notificationService.sendEvent(
+        'strategy_stopped',
+        { strategyId, pair: 'paper', mode: 'paper' },
+        telegramConfig,
+      );
+    }
+
+    return { strategyId, status: 'stopped', stoppedAt: new Date() };
+  }
+
+  /**
+   * Returns the paper trading status for a user: virtual balance, active strategies, completed rounds, PnL.
+   */
+  async getPaperStatus(userId: string) {
+    const paperAccount = await this.prisma.paperAccount.findFirst({
+      where: { userId },
+      include: {
+        paperStrategies: {
+          include: { paperOrders: true },
+          orderBy: { startedAt: 'desc' },
+        },
+      },
+    });
+
+    if (!paperAccount) {
+      return {
+        virtualBalance: 0,
+        activeStrategiesCount: 0,
+        completedRounds: 0,
+        totalRealizedPnl: 0,
+        strategies: [],
+      };
+    }
+
+    let completedRounds = 0;
+    let totalRealizedPnl = 0;
+    const strategies = paperAccount.paperStrategies.map((s) => {
+      const rounds = s.paperOrders.filter((o) => o.status === 'tp_filled').length;
+      const realizedPnl = s.paperOrders.reduce(
+        (sum, o) => sum + (o.realizedPnl ?? 0),
+        0,
+      );
+      completedRounds += rounds;
+      totalRealizedPnl += realizedPnl;
+
+      return {
+        strategyId: s.id,
+        pair: s.pair,
+        capital: s.capital,
+        status: s.status,
+        startedAt: s.startedAt,
+        stoppedAt: s.stoppedAt,
+        completedRounds: rounds,
+        realizedPnl: Number(realizedPnl.toFixed(6)),
+        totalOrders: s.paperOrders.length,
+      };
+    });
+
+    return {
+      virtualBalance: Number(paperAccount.virtualBalance.toFixed(2)),
+      exchange: paperAccount.exchange,
+      activeStrategiesCount: paperAccount.paperStrategies.filter((s) => s.status === 'active').length,
+      completedRounds,
+      totalRealizedPnl: Number(totalRealizedPnl.toFixed(6)),
+      strategies,
+    };
+  }
+
+  // ============================================================
+  // Internal Worker Methods — Paper Trading (called by Worker)
+  // ============================================================
+
+  /**
+   * Returns all ACTIVE paper strategies with their pending grid orders
+   * and tp_placed orders. Called by the Worker on startup and every 60s.
+   */
+  async getAllActivePaperStrategiesForWorker() {
+    const strategies = await this.prisma.paperStrategy.findMany({
+      where: { status: 'active' },
+      include: {
+        paperOrders: {
+          where: { status: { in: ['pending', 'tp_placed'] } },
+          orderBy: { globalOrderIndex: 'asc' },
+        },
+      },
+    });
+
+    return strategies.map((s) => ({
+      strategyId: s.id,
+      symbol: s.pair,
+      exchange: s.exchange,
+      pendingOrders: s.paperOrders
+        .filter((o) => o.status === 'pending')
+        .map((o) => ({
+          orderId: o.id,
+          symbol: s.pair,
+          gridPrice: o.gridPrice,
+          tpPrice: o.tpPrice,
+          sectionIndex: o.sectionIndex,
+          orderIndex: o.orderIndex,
+          allocatedCapital: o.allocatedCapital,
+        })),
+      tpOrders: s.paperOrders
+        .filter((o) => o.status === 'tp_placed')
+        .map((o) => ({
+          orderId: o.id,
+          symbol: s.pair,
+          tpPrice: o.tpPrice,
+          sectionIndex: o.sectionIndex,
+          orderIndex: o.orderIndex,
+        })),
+    }));
+  }
+
+  /**
+   * Triggers a Market Buy for a paper order when the Worker detects
+   * that current price has crossed a grid level downwards.
+   * Simulates fill against virtual balance — no exchange interaction.
+   */
+  async triggerPaperGridOrder(orderId: string, triggeredPrice: number) {
+    // Atomically claim this paper order against double-trigger
+    const claim = await this.prisma.paperOrder.updateMany({
+      where: { id: orderId, status: 'pending' },
+      data: { status: 'filled', filledAt: new Date() },
+    });
+
+    if (claim.count === 0) {
+      const existing = await this.prisma.paperOrder.findUnique({ where: { id: orderId } });
+      if (!existing) throw new NotFoundException(`Paper order ${orderId} not found`);
+      this.logger.warn('Paper order is not pending, skipping', { orderId, status: existing.status });
+      return { skipped: true, reason: 'Order already processed' };
+    }
+
+    // Fetch order with strategy relation
+    const order = await this.prisma.paperOrder.findUnique({
+      where: { id: orderId },
+      include: { paperStrategy: true },
+    });
+
+    if (!order) {
+      throw new NotFoundException(`Paper order ${orderId} not found after claim`);
+    }
+
+    // Simulate market buy
+    const fill = this.paperExchangeEngine.simulateMarketBuy(
+      order.allocatedCapital,
+      triggeredPrice,
+    );
+
+    // Update order with fill data — TP is "placed" virtually
+    await this.prisma.paperOrder.update({
+      where: { id: orderId },
+      data: {
+        status: 'tp_placed',
+        buyFilledPrice: fill.filledPrice,
+        buyFilledQuantity: fill.filledQuantity,
+        buyFee: fill.fee,
+      },
+    });
+
+    this.logger.info('Paper order filled', {
+      orderId,
+      pair: order.paperStrategy.pair,
+      filledPrice: fill.filledPrice,
+    });
+
+    this.realtime.emitOrderUpdate(order.paperStrategy.userId, {
+      orderId,
+      strategyId: order.paperStrategy.id,
+      pair: order.paperStrategy.pair,
+      status: 'tp_placed',
+      filledPrice: fill.filledPrice,
+    });
+
+    // Send Telegram notification when paper BUY filled
+    const telegramConfig = this.getTelegramConfig();
+    if (telegramConfig) {
+      await this.notificationService.sendEvent(
+        'order_filled',
+        {
+          orderId,
+          pair: order.paperStrategy.pair,
+          filledPrice: fill.filledPrice,
+          filledQuantity: fill.filledQuantity,
+          mode: 'paper',
+        },
+        telegramConfig,
+      );
+    }
+
+    return {
+      orderId,
+      status: 'tp_placed',
+      filledPrice: fill.filledPrice,
+      filledQuantity: fill.filledQuantity,
+      fee: fill.fee,
+    };
+  }
+
+  /**
+   * Triggers a TP SELL fill for a paper order when the Worker detects
+   * that current price has crossed the TP price (upwards).
+   * Simulates fill against virtual balance — no exchange interaction.
+   */
+  async triggerPaperTpFill(orderId: string, _currentPrice: number) {
+    // Atomically claim the TP fill against double-trigger
+    const claim = await this.prisma.paperOrder.updateMany({
+      where: { id: orderId, status: 'tp_placed' },
+      data: { status: 'tp_filled', tpFilledAt: new Date() },
+    });
+
+    if (claim.count === 0) {
+      const existing = await this.prisma.paperOrder.findUnique({ where: { id: orderId } });
+      if (!existing) throw new NotFoundException(`Paper order ${orderId} not found`);
+      this.logger.warn('Paper order is not tp_placed, skipping', { orderId, status: existing.status });
+      return { skipped: true, reason: 'Order already processed' };
+    }
+
+    // Fetch order with strategy + account relations
+    const order = await this.prisma.paperOrder.findUnique({
+      where: { id: orderId },
+      include: { paperStrategy: { include: { paperAccount: true } } },
+    });
+
+    if (!order) {
+      throw new NotFoundException(`Paper order ${orderId} not found after claim`);
+    }
+
+    // Simulate TP sell
+    const fill = this.paperExchangeEngine.simulateTpSell(
+      order.buyFilledQuantity!,
+      order.buyFilledPrice!,
+      order.buyFee!,
+      order.tpPrice,
+    );
+
+    // Update order with TP fill data
+    await this.prisma.paperOrder.update({
+      where: { id: orderId },
+      data: {
+        status: 'tp_filled',
+        tpFilledPrice: fill.filledPrice,
+        tpFee: fill.fee,
+        realizedPnl: fill.realizedPnl,
+      },
+    });
+
+    // Add proceeds minus fee back to virtual balance
+    const proceeds = order.buyFilledQuantity! * fill.filledPrice - fill.fee;
+    await this.prisma.paperAccount.update({
+      where: { id: order.paperStrategy.paperAccountId },
+      data: { virtualBalance: { increment: proceeds } },
+    });
+
+    this.logger.info('Paper TP filled', {
+      orderId,
+      pair: order.paperStrategy.pair,
+      realizedPnl: fill.realizedPnl,
+    });
+
+    this.realtime.emitOrderUpdate(order.paperStrategy.userId, {
+      orderId,
+      strategyId: order.paperStrategy.id,
+      pair: order.paperStrategy.pair,
+      status: 'tp_filled',
+      realizedPnl: fill.realizedPnl,
+    });
+
+    // Send Telegram notification when paper TP filled
+    const telegramConfig = this.getTelegramConfig();
+    if (telegramConfig) {
+      await this.notificationService.sendEvent(
+        'tp_filled',
+        {
+          orderId,
+          pair: order.paperStrategy.pair,
+          realizedPnl: fill.realizedPnl ?? 0,
+          mode: 'paper',
+        },
+        telegramConfig,
+      );
+    }
+
+    return {
+      orderId,
+      status: 'tp_filled',
+      realizedPnl: fill.realizedPnl,
+      tpFilledPrice: fill.filledPrice,
+      tpFee: fill.fee,
+    };
   }
 }

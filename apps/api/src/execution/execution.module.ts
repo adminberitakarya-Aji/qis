@@ -3,9 +3,10 @@ import { ExecutionController, WorkerController } from './execution.controller';
 import { ExecutionService } from './execution.service';
 import { StrategyModule } from '../strategy/strategy.module';
 import { RiskModule } from '../risk/risk.module';
+import { NotificationModule } from '../notification/notification.module';
 
 @Module({
-  imports: [StrategyModule, RiskModule],
+  imports: [StrategyModule, RiskModule, NotificationModule],
   controllers: [ExecutionController, WorkerController],
   providers: [ExecutionService],
   exports: [ExecutionService],

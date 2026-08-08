@@ -57,11 +57,21 @@ interface GridLevel {
   orderIndex: number;
 }
 
+interface TpLevel {
+  orderId: string;
+  symbol: string;
+  tpPrice: number;
+  sectionIndex: number;
+  orderIndex: number;
+}
+
 interface ActiveStrategy {
   strategyId: string;
   symbol: string;    // e.g. "BTC/USDT"
   exchange: string;  // 'binance' | 'bybit'
+  isPaper?: boolean; // true untuk paper trading, false/undefined untuk real trading
   pendingOrders: GridLevel[];
+  tpOrders: TpLevel[]; // TP sell levels — hanya diisi untuk paper trading
 }
 
 // ============================================================
@@ -173,6 +183,52 @@ async function fetchActiveStrategies(): Promise<ActiveStrategy[]> {
 }
 
 // ============================================================
+// Fetch active PAPER trading strategies from NestJS API
+// ============================================================
+async function fetchActivePaperStrategies(): Promise<ActiveStrategy[]> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/execution/paper/active-strategies`, {
+      headers: WORKER_HEADERS,
+    });
+    if (!res.ok) {
+      logger.warn('Failed to fetch active paper strategies from API', { status: res.status });
+      return [];
+    }
+    const json = (await res.json()) as any;
+    const data = (json.data || json) as ActiveStrategy[];
+    // Tandai sebagai paper trading sehingga worker memanggil endpoint yang benar
+    return data.map((s) => ({ ...s, isPaper: true }));
+  } catch (err: any) {
+    logger.warn('API unreachable for paper strategies, will retry', { error: err.message });
+    return [];
+  }
+}
+
+// ============================================================
+// Trigger market order for a PAPER grid level via NestJS API
+// ============================================================
+async function triggerPaperGridOrder(orderId: string, triggeredPrice: number): Promise<void> {
+  try {
+    logger.info('Triggering paper grid order', { orderId, triggeredPrice });
+
+    const res = await fetch(`${API_BASE_URL}/execution/paper/trigger-order`, {
+      method: 'POST',
+      headers: WORKER_HEADERS,
+      body: JSON.stringify({ orderId, triggeredPrice }),
+    });
+
+    if (res.ok) {
+      logger.info('Paper order triggered successfully', { orderId });
+    } else {
+      const errText = await res.text();
+      logger.warn('Paper order trigger failed', { orderId, status: res.status, error: errText });
+    }
+  } catch (err: any) {
+    logger.error('Failed to trigger paper order', { orderId }, err);
+  }
+}
+
+// ============================================================
 // Trigger market order for a grid level via NestJS API
 // ============================================================
 async function triggerGridOrder(orderId: string, triggeredPrice: number): Promise<void> {
@@ -193,6 +249,55 @@ async function triggerGridOrder(orderId: string, triggeredPrice: number): Promis
     }
   } catch (err: any) {
     logger.error('Failed to trigger order', { orderId }, err);
+  }
+}
+
+// ============================================================
+// Trigger TP fill for paper trading when price crosses TP level
+// ============================================================
+async function triggerTpFill(orderId: string, currentPrice: number): Promise<void> {
+  try {
+    logger.info('Triggering TP fill', { orderId, currentPrice });
+
+    const res = await fetch(`${API_BASE_URL}/execution/trigger-tp`, {
+      method: 'POST',
+      headers: WORKER_HEADERS,
+      body: JSON.stringify({ orderId, currentPrice }),
+    });
+
+    if (res.ok) {
+      logger.info('TP triggered successfully', { orderId });
+    } else {
+      const errText = await res.text();
+      logger.warn('TP trigger failed', { orderId, status: res.status, error: errText });
+    }
+  } catch (err: any) {
+    logger.error('Failed to trigger TP', { orderId }, err);
+  }
+}
+
+// ============================================================
+// Check price against TP levels and trigger fill if crossed
+// (Paper trading only — real trading uses exchange limit orders)
+// ============================================================
+function checkAndTriggerTp(strategies: ActiveStrategy[], currentPrice: number): void {
+  for (const strategy of strategies) {
+    const tpOrders = strategy.tpOrders ?? [];
+    const crossedTp = tpOrders.filter(
+      (order) => currentPrice >= order.tpPrice
+    );
+
+    if (crossedTp.length === 0) continue;
+
+    // Remove crossed TP orders to prevent double-trigger
+    const crossedIds = new Set(crossedTp.map((o) => o.orderId));
+    strategy.tpOrders = tpOrders.filter(
+      (o) => !crossedIds.has(o.orderId)
+    );
+
+    for (const tp of crossedTp) {
+      triggerTpFill(tp.orderId, currentPrice);
+    }
   }
 }
 
@@ -218,14 +323,26 @@ function checkAndTrigger(strategies: ActiveStrategy[], currentPrice: number): vo
     // If a gap crosses multiple levels, send them as a batch so the API
     // can enforce maxCapitalPerMovementPercent.
     if (crossedOrders.length > 1) {
-      triggerGridOrdersBatch(
-        strategy.strategyId,
-        crossedOrders.map((o) => o.orderId),
-        currentPrice,
-      );
+      if (strategy.isPaper) {
+        // Paper trading gap: trigger each paper order individually
+        // (paper trading uses the same capital protection logic server-side)
+        for (const order of crossedOrders) {
+          triggerPaperGridOrder(order.orderId, currentPrice);
+        }
+      } else {
+        triggerGridOrdersBatch(
+          strategy.strategyId,
+          crossedOrders.map((o) => o.orderId),
+          currentPrice,
+        );
+      }
     } else {
-      // Single order — use the existing single trigger path
-      triggerGridOrder(crossedOrders[0].orderId, currentPrice);
+      // Single order — choose the correct endpoint based on strategy type
+      if (strategy.isPaper) {
+        triggerPaperGridOrder(crossedOrders[0].orderId, currentPrice);
+      } else {
+        triggerGridOrder(crossedOrders[0].orderId, currentPrice);
+      }
     }
   }
 }
@@ -321,6 +438,7 @@ function subscribeToBinanceSymbol(binanceSymbol: string, strategies: ActiveStrat
         if (isNaN(currentPrice) || currentPrice <= 0) return;
 
         checkAndTrigger(strategies, currentPrice);
+        checkAndTriggerTp(strategies, currentPrice);
       } catch (parseErr) {
         // Ignore malformed tick data
       }
@@ -355,7 +473,10 @@ function subscribeToBinanceSymbol(binanceSymbol: string, strategies: ActiveStrat
           subKey,
           'binance',
           binanceSymbol.toUpperCase().replace('USDT', '/USDT'),
-          (price) => checkAndTrigger(strategies, price)
+          (price) => {
+            checkAndTrigger(strategies, price);
+            checkAndTriggerTp(strategies, price);
+          }
         );
 
         // Alert if we've exceeded max reconnect attempts
@@ -449,6 +570,7 @@ function subscribeToBybitSymbol(bybitSymbol: string, strategies: ActiveStrategy[
           if (isNaN(currentPrice) || currentPrice <= 0) return;
 
           checkAndTrigger(strategies, currentPrice);
+          checkAndTriggerTp(strategies, currentPrice);
         }
       } catch (parseErr) {
         // Ignore malformed tick data
@@ -484,7 +606,10 @@ function subscribeToBybitSymbol(bybitSymbol: string, strategies: ActiveStrategy[
           subKey,
           'bybit',
           bybitSymbol.toUpperCase().replace('USDT', '/USDT'),
-          (price) => checkAndTrigger(strategies, price)
+          (price) => {
+            checkAndTrigger(strategies, price);
+            checkAndTriggerTp(strategies, price);
+          }
         );
 
         // Alert if we've exceeded max reconnect attempts
@@ -536,18 +661,20 @@ async function main() {
     bybitWsBase: BYBIT_WS_BASE,
   });
 
-  // Initial load of active strategies
+  // Initial load of active strategies (real + paper)
   const strategies = await fetchActiveStrategies();
+  const paperStrategies = await fetchActivePaperStrategies();
+  const allStrategies = [...strategies, ...paperStrategies];
 
-  if (strategies.length === 0) {
+  if (allStrategies.length === 0) {
     logger.info('No active strategies found. Waiting for strategies to be deployed...');
     logger.info('Worker will poll for active strategies every 60s.');
   } else {
-    logger.info('Found active strategies. Setting up price monitors...', { count: strategies.length });
+    logger.info('Found active strategies. Setting up price monitors...', { count: allStrategies.length });
 
     // Group strategies by exchange:symbol and subscribe
     const symbolMap = new Map<string, ActiveStrategy[]>();
-    for (const s of strategies) {
+    for (const s of allStrategies) {
       strategyMap.set(s.strategyId, s);
       const exchange = s.exchange?.toLowerCase() || 'binance';
       const key = exchange === 'bybit'
@@ -563,14 +690,16 @@ async function main() {
     }
   }
 
-  // Poll API every 60s for newly deployed strategies
+  // Poll API every 60s for newly deployed strategies (real + paper)
   strategyRefreshInterval = setInterval(async () => {
     if (isShuttingDown) return;
 
     logger.debug('Refreshing active strategies from API...');
     const updatedStrategies = await fetchActiveStrategies();
+    const updatedPaperStrategies = await fetchActivePaperStrategies();
+    const allUpdated = [...updatedStrategies, ...updatedPaperStrategies];
 
-    for (const strategy of updatedStrategies) {
+    for (const strategy of allUpdated) {
       if (!strategyMap.has(strategy.strategyId)) {
         logger.info('New strategy detected', {
           strategyId: strategy.strategyId,
