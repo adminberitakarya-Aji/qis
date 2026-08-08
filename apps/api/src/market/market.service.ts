@@ -7,11 +7,11 @@ export class MarketService {
   private marketEngine = new MarketEngine();
 
   async getMarketList(exchange: 'binance' | 'bybit'): Promise<string[]> {
-    return this.marketEngine.getMarketList(exchange);
+    return await this.marketEngine.getMarketList(exchange);
   }
 
   async getTicker(exchange: 'binance' | 'bybit', symbol: string): Promise<MarketTicker> {
-    return this.marketEngine.getTicker(exchange, symbol);
+    return await this.marketEngine.getTicker(exchange, symbol);
   }
 
   async getCandlesticks(
@@ -20,7 +20,7 @@ export class MarketService {
     timeframe: string = '1h',
     limit: number = 100
   ): Promise<Candlestick[]> {
-    return this.marketEngine.getCandlesticks(exchange, symbol, timeframe, limit);
+    return await this.marketEngine.getCandlesticks(exchange, symbol, timeframe, limit);
   }
 
   async getOrderBook(
@@ -28,13 +28,13 @@ export class MarketService {
     symbol: string,
     limit: number = 20
   ): Promise<OrderBook> {
-    return this.marketEngine.getOrderBook(exchange, symbol, limit);
+    return await this.marketEngine.getOrderBook(exchange, symbol, limit);
   }
 
   async getMarketStats(
     exchange: 'binance' | 'bybit',
     symbol: string
   ): Promise<MarketStatistics> {
-    return this.marketEngine.getMarketStats(exchange, symbol);
+    return await this.marketEngine.getMarketStats(exchange, symbol);
   }
 }

@@ -6,7 +6,7 @@ export class AiService {
   private aiEngine = new AiEngine();
 
   async getTopPairsRecommendation(exchange: 'binance' | 'bybit'): Promise<PairRecommendation[]> {
-    return this.aiEngine.getTopPairsRecommendation(exchange);
+    return await this.aiEngine.getTopPairsRecommendation(exchange);
   }
 
   async recommendStrategyParams(
@@ -15,6 +15,6 @@ export class AiService {
     sectionCount: 1 | 2 | 3,
     capital: number
   ): Promise<AiStrategyRecommendation> {
-    return this.aiEngine.recommendStrategyParams(exchange, symbol, sectionCount, capital);
+    return await this.aiEngine.recommendStrategyParams(exchange, symbol, sectionCount, capital);
   }
 }

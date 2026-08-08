@@ -15,6 +15,6 @@ export class NotificationService {
     config: NotificationConfig,
   ) {
     const payload = this.notificationEngine.buildEventPayload(event, details);
-    return this.notificationEngine.notify(payload, config);
+    return await this.notificationEngine.notify(payload, config);
   }
 }
