@@ -15,6 +15,11 @@ turbo/
 .env.*
 !.env.example
 
+# Note: ecosystem.config.cjs is intentionally NOT gitignored — it reads
+# secrets from .env at runtime instead of hardcoding them, so it's safe
+# to commit. If you ever hardcode a real secret directly into it again,
+# add it here and run: git rm --cached ecosystem.config.cjs
+
 # Logs
 logs/
 *.log
