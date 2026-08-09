@@ -19,27 +19,7 @@
     "noUnusedParameters": true,
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true,
-    "isolatedModules": true,
-    "baseUrl": ".",
-    "paths": {
-      "@qis/shared": ["packages/shared/src/index.ts"],
-      "@qis/core": ["packages/core/src/index.ts"],
-      "@qis/logger": ["packages/logger/src/index.ts"],
-      "@qis/ai-engine": ["packages/engines/ai-engine/src/index.ts"],
-      "@qis/analytics-engine": ["packages/engines/analytics-engine/src/index.ts"],
-      "@qis/backtest-engine": ["packages/engines/backtest-engine/src/index.ts"],
-      "@qis/exchange-engine": ["packages/engines/exchange-engine/src/index.ts"],
-      "@qis/execution-engine": ["packages/engines/execution-engine/src/index.ts"],
-      "@qis/grid-engine": ["packages/engines/grid-engine/src/index.ts"],
-      "@qis/market-engine": ["packages/engines/market-engine/src/index.ts"],
-      "@qis/notification-engine": ["packages/engines/notification-engine/src/index.ts"],
-      "@qis/paper-exchange-engine": ["packages/engines/paper-exchange-engine/src/index.ts"],
-      "@qis/portfolio-engine": ["packages/engines/portfolio-engine/src/index.ts"],
-      "@qis/risk-engine": ["packages/engines/risk-engine/src/index.ts"],
-      "@qis/strategy-engine": ["packages/engines/strategy-engine/src/index.ts"],
-      "@qis/providers-ai": ["packages/providers/ai/src/index.ts"],
-      "@qis/providers-exchange": ["packages/providers/exchange/src/index.ts"]
-    }
+    "isolatedModules": true
   },
   "exclude": ["node_modules", "dist", ".next", "coverage"]
 }
