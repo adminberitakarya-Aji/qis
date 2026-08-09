@@ -125,10 +125,35 @@ chmod +x infrastructure/tunnel-with-telegram.sh
 ## Langkah 6 — Jalankan Semua Service
 
 ```bash
+# 1. Start semua proses
 pm2 start ecosystem.config.cjs
-pm2 save
-pm2 startup   # ikuti instruksi yang muncul, biar auto-start saat reboot
+
+# 2. Tunggu ~5 detik lalu cek status — semua harus 'online'
 pm2 status
+```
+
+```bash
+# 3. Aktifkan auto-start saat reboot
+pm2 startup
+# Jalankan perintah sudo yang muncul, contoh:
+# sudo env PATH=$PATH:/usr/bin /usr/lib/node_modules/pm2/bin/pm2 startup systemd -u bakpao --hp /home/bakpao
+
+# 4. Setelah menjalankan perintah sudo di atas, SIMPAN process list
+pm2 save
+
+# 5. Cek status akhir
+pm2 status
+```
+
+> ⚠️ **Jika `qis-api` errored setelah `pm2 startup`**: ini normal — proses
+> `pm2 resurrect` bisa menyebabkan restart ulang. Cukup jalankan:
+> ```bash
+> pm2 restart qis-api
+> pm2 status
+> ```
+
+```bash
+# 6. Pantau log tunnel untuk URL publik
 pm2 logs qis-tunnel   # tunggu sampai muncul URL trycloudflare.com
 ```
 
