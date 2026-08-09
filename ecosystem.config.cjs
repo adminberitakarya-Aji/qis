@@ -94,6 +94,9 @@ module.exports = {
         // process.env directly. PM2 injects this value at process start,
         // sourced from the same root .env as qis-api above.
         WORKER_SECRET: env.WORKER_SECRET,
+        // ExchangeEngine (used for REST polling fallback) requires
+        // ENCRYPTION_KEY to decrypt stored API credentials at startup.
+        ENCRYPTION_KEY: env.ENCRYPTION_KEY,
       },
     },
     {
