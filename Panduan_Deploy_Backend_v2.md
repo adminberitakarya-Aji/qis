@@ -27,20 +27,12 @@ sudo dpkg -i cloudflared.deb
 cloudflared --version
 ```
 
-## Langkah 2 — Clone & Build
+## Langkah 2 — Clone & Install
 
 ```bash
 git clone https://github.com/adminberitakarya-Aji/qis.git
 cd qis
 pnpm install
-pnpm build
-
-cd apps/ai-service
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-deactivate
-cd ../..
 ```
 
 ## Langkah 3 — File `.env` (di ROOT repo, bukan `apps/api/`)
@@ -77,15 +69,34 @@ OPS_TELEGRAM_CHAT_ID=""
 ```
 
 > `WORKER_SECRET` **tidak** ditaruh di sini — worker tidak baca file `.env`
-> sama sekali. Isi langsung di `ecosystem.config.cjs` (Langkah 4).
+> sama sekali. Isi langsung di `ecosystem.config.cjs` (Langkah 5).
 
-Migrasi database (sekali saja):
+## Langkah 4 — Generate Prisma Client & Build
+
+> ⚠️ **Urutan ini wajib**: `.env` harus ada dulu sebelum `prisma generate`
+> bisa membaca `DATABASE_URL`, dan `prisma generate` harus selesai sebelum
+> `pnpm build` supaya TypeScript punya tipe Prisma yang lengkap.
 
 ```bash
+# 1. Generate Prisma client (butuh DATABASE_URL di .env)
+pnpm --filter @qis/api exec prisma generate
+
+# 2. Migrasi database (sekali saja saat deploy pertama)
 pnpm --filter @qis/api exec prisma migrate deploy
+
+# 3. Build semua package
+pnpm build
+
+# 4. Setup Python environment untuk AI service
+cd apps/ai-service
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+deactivate
+cd ../..
 ```
 
-## Langkah 4 — `ecosystem.config.cjs` (tidak perlu edit manual)
+## Langkah 5 — `ecosystem.config.cjs` (tidak perlu edit manual)
 
 File ini **aman di-commit ke Git** — tidak ada secret di-hardcode di
 dalamnya. Semua nilai (`WORKER_SECRET`, `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`,
@@ -111,7 +122,7 @@ chmod +x infrastructure/tunnel-with-telegram.sh
 > langsung ke file ini lagi (misal buat testing cepat), jangan lupa
 > `git rm --cached ecosystem.config.cjs` dan tambahkan ke `.gitignore`.
 
-## Langkah 5 — Jalankan Semua Service
+## Langkah 6 — Jalankan Semua Service
 
 ```bash
 pm2 start ecosystem.config.cjs
@@ -134,7 +145,7 @@ NEXT_PUBLIC_API_URL=https://random-words.trycloudflare.com/api/v1
 NEXT_PUBLIC_WS_URL=wss://random-words.trycloudflare.com/realtime
 ```
 
-## Langkah 6 — Isi di Vercel Dashboard
+## Langkah 7 — Isi di Vercel Dashboard
 
 Copy 2 baris dari pesan Telegram tadi ke **Project Settings → Environment
 Variables** di Vercel, lalu redeploy frontend.
