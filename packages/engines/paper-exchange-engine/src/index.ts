@@ -18,7 +18,7 @@ export class PaperExchangeEngine {
   /**
    * Simulates a MARKET BUY fill.
    * - Buy executes at triggeredPrice + slippage
-   * - Allocated capital is deducted from virtual balance (done by caller)
+   * - Virtual capital is reserved upfront by startPaperExecution
    */
   simulateMarketBuy(
     allocatedCapital: number,
@@ -48,6 +48,32 @@ export class PaperExchangeEngine {
     tpPrice: number,
   ): PaperFillResult {
     const sellPrice = tpPrice * (1 - this.slippagePercent / 100);
+    const sellProceeds = filledQuantity * sellPrice;
+    const sellFee = sellProceeds * (this.sellFeePercent / 100);
+    const buyCost = filledQuantity * buyFilledPrice + buyFee;
+    const realizedPnl = sellProceeds - sellFee - buyCost;
+
+    return {
+      filledPrice: Number(sellPrice.toFixed(8)),
+      filledQuantity,
+      fee: Number(sellFee.toFixed(6)),
+      realizedPnl: Number(realizedPnl.toFixed(6)),
+    };
+  }
+
+  /**
+   * Simulates a MARKET SELL fill (for settling an open position when a paper strategy is stopped).
+   * - Sell executes at currentMarketPrice - slippage
+   * - Proceeds minus fee are calculated to be returned to virtual balance
+   * - Calculates realized PnL against original buy cost
+   */
+  simulateMarketSell(
+    filledQuantity: number,
+    buyFilledPrice: number,
+    buyFee: number,
+    currentMarketPrice: number,
+  ): PaperFillResult {
+    const sellPrice = currentMarketPrice * (1 - this.slippagePercent / 100);
     const sellProceeds = filledQuantity * sellPrice;
     const sellFee = sellProceeds * (this.sellFeePercent / 100);
     const buyCost = filledQuantity * buyFilledPrice + buyFee;

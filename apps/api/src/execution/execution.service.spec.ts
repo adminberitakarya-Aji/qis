@@ -10,6 +10,14 @@ import type { NotificationService } from '../notification/notification.service';
 import type { ConfigService } from '@nestjs/config';
 import type { ExchangeEngine } from '@qis/exchange-engine';
 
+jest.mock('@qis/exchange-engine', () => {
+  return {
+    ExchangeEngine: jest.fn().mockImplementation(() => ({
+      fetchTicker: jest.fn().mockResolvedValue({ last: 100 }),
+    })),
+  };
+});
+
 /**
  * Regression tests for the atomic-claim fixes in triggerGridOrder() and
  * stopExecution(). See the block comments above each method in
@@ -412,3 +420,151 @@ describe.skip('ExecutionService — real database concurrency (integration)', ()
     // Intentionally left unimplemented — requires TEST_DATABASE_URL wiring.
   });
 });
+
+describe('ExecutionService — Paper Trading Lifecycle & Capital Refund', () => {
+  const userId = 'user_paper_1';
+  const blueprintId = 'bp_paper_1';
+  const blueprint = {
+    id: blueprintId,
+    userId,
+    exchange: 'binance',
+    pair: 'BTC/USDT',
+    tradingCapital: 100,
+    sections: [
+      {
+        allocationPercent: 100,
+        gridCount: 4,
+        gridDistancePercent: 1,
+        sectionGapPercent: 0,
+        minNetProfitPercent: 1,
+      },
+    ],
+  };
+
+  it('startPaperExecution reserves tradingCapital upfront from virtual balance', async () => {
+    const paperAccount = { id: 'pa_1', userId, exchange: 'binance', label: 'Paper Trading', virtualBalance: 100 };
+    const paperAccountAfter = { id: 'pa_1', userId, exchange: 'binance', label: 'Paper Trading', virtualBalance: 0 };
+    const paperStrategy = { id: 'ps_1', userId, paperAccountId: 'pa_1', blueprintId, exchange: 'binance', pair: 'BTC/USDT', capital: 100, status: 'active' };
+
+    const txMock = {
+      paperAccount: {
+        upsert: jest.fn().mockResolvedValue(paperAccount),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUniqueOrThrow: jest.fn().mockResolvedValue(paperAccountAfter),
+      },
+      paperStrategy: {
+        create: jest.fn().mockResolvedValue(paperStrategy),
+      },
+      paperOrder: {
+        createMany: jest.fn().mockResolvedValue({ count: 4 }),
+      },
+    };
+
+    const prismaMock = {
+      paperStrategy: { findUnique: jest.fn().mockResolvedValue(null) },
+      $transaction: jest.fn().mockImplementation((cb) => cb(txMock)),
+    };
+
+    const { service } = buildService(prismaMock);
+    (service as any).strategyService = {
+      getBlueprint: jest.fn().mockResolvedValue(blueprint),
+    };
+
+    const result = await service.startPaperExecution(userId, { blueprintId, exchange: 'binance' });
+
+    expect(result).toMatchObject({
+      strategyId: 'ps_1',
+      blueprintId,
+      pair: 'BTC/USDT',
+      capital: 100,
+      status: 'active',
+      virtualBalanceRemaining: 0,
+    });
+    expect(txMock.paperAccount.updateMany).toHaveBeenCalledWith({
+      where: { id: 'pa_1', virtualBalance: { gte: 100 } },
+      data: { virtualBalance: { decrement: 100 } },
+    });
+  });
+
+  it('stopPaperExecution refunds unspent pending capital + settles tp_placed open positions without capital leak', async () => {
+    const strategy = {
+      id: 'ps_1',
+      userId,
+      paperAccountId: 'pa_1',
+      exchange: 'binance',
+      pair: 'BTC/USDT',
+      status: 'active',
+    };
+
+    // 3 pending orders ($25 each) + 1 tp_placed order ($25 allocated, bought 0.000277 BTC at $90,000)
+    const pendingOrders = [
+      { id: 'po_1', status: 'pending', allocatedCapital: 25, gridPrice: 89000 },
+      { id: 'po_2', status: 'pending', allocatedCapital: 25, gridPrice: 88000 },
+      { id: 'po_3', status: 'pending', allocatedCapital: 25, gridPrice: 87000 },
+    ];
+    const openOrder = {
+      id: 'po_4',
+      status: 'tp_placed',
+      allocatedCapital: 25,
+      gridPrice: 90000,
+      buyFilledPrice: 90000,
+      buyFilledQuantity: 0.00027777,
+      buyFee: 0.025,
+    };
+
+    const paperAccountBefore = { id: 'pa_1', virtualBalance: 0 };
+    const paperAccountAfter = { id: 'pa_1', virtualBalance: 101.35 };
+
+    const txMock = {
+      paperStrategy: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUniqueOrThrow: jest.fn().mockResolvedValue({
+          ...strategy,
+          paperAccount: paperAccountBefore,
+          paperOrders: [...pendingOrders, openOrder],
+        }),
+      },
+      paperOrder: {
+        update: jest.fn().mockResolvedValue({}),
+      },
+      paperAccount: {
+        update: jest.fn().mockResolvedValue(paperAccountAfter),
+        findUniqueOrThrow: jest.fn().mockResolvedValue(paperAccountAfter),
+      },
+    };
+
+    const prismaMock = {
+      paperStrategy: {
+        findUnique: jest.fn().mockResolvedValue(strategy),
+      },
+      $transaction: jest.fn().mockImplementation((cb) => cb(txMock)),
+    };
+
+    const { service } = buildService(prismaMock);
+
+    const result = await service.stopPaperExecution(userId, 'ps_1');
+
+    expect(txMock.paperStrategy.updateMany).toHaveBeenCalledWith({
+      where: { id: 'ps_1', userId, status: 'active' },
+      data: { status: 'stopped', stoppedAt: expect.any(Date) },
+    });
+
+    // 3 pending orders ($75) + 1 tp_placed settled order (> $25) must be refunded
+    expect(txMock.paperAccount.update).toHaveBeenCalledWith({
+      where: { id: 'pa_1' },
+      data: { virtualBalance: { increment: expect.any(Number) } },
+    });
+
+    // All 4 orders must be canceled in DB
+    expect(txMock.paperOrder.update).toHaveBeenCalledTimes(4);
+
+    expect(result).toMatchObject({
+      strategyId: 'ps_1',
+      status: 'stopped',
+      refundedAmountUsdt: expect.any(Number),
+      virtualBalance: 101.35,
+    });
+    expect(result.refundedAmountUsdt).toBeGreaterThanOrEqual(75);
+    expect(result.pendingRefundUsdt).toBe(75);
+  });
+});

@@ -992,38 +992,150 @@ export class ExecutionService {
 
   /**
    * Stops a paper trading strategy.
-   * Any open paper orders are marked 'canceled'.
+   * - Atomically claims the strategy (active -> stopped)
+   * - Calculates refund for pending orders (never executed -> 100% allocated capital refunded)
+   * - Settles any open tp_placed orders at current market price (or buyFilledPrice fallback)
+   * - Increments refunded capital + open position proceeds back to paperAccount.virtualBalance
+   * - Updates pending & tp_placed orders to status 'canceled'
+   * - All DB operations run inside a single atomic transaction.
    */
   async stopPaperExecution(userId: string, strategyId: string) {
-    const claim = await this.prisma.paperStrategy.updateMany({
-      where: { id: strategyId, userId, status: 'active' },
-      data: { status: 'stopped', stoppedAt: new Date() },
+    // Pre-check strategy existence & ownership
+    const strategyCheck = await this.prisma.paperStrategy.findUnique({
+      where: { id: strategyId },
+      select: { exchange: true, pair: true, userId: true, status: true },
     });
 
-    if (claim.count === 0) {
-      const existing = await this.prisma.paperStrategy.findUnique({ where: { id: strategyId } });
-      if (!existing) throw new NotFoundException('Paper strategy not found');
-      if (existing.userId !== userId) throw new ForbiddenException('You do not own this strategy');
-      throw new BadRequestException('Paper strategy is not active');
+    if (!strategyCheck) throw new NotFoundException('Paper strategy not found');
+    if (strategyCheck.userId !== userId) throw new ForbiddenException('You do not own this strategy');
+    if (strategyCheck.status !== 'active') throw new BadRequestException('Paper strategy is not active');
+
+    // Fetch market price for open position settlement (outside transaction to prevent blocking locks)
+    let currentMarketPrice: number | undefined;
+    try {
+      const { ExchangeEngine: ExchangeEngineClass } = await import('@qis/exchange-engine');
+      const publicTicker = new ExchangeEngineClass();
+      const ticker = await publicTicker.fetchTicker(
+        strategyCheck.exchange as 'binance' | 'bybit',
+        strategyCheck.pair,
+      );
+      if (ticker.last && ticker.last > 0) {
+        currentMarketPrice = ticker.last;
+      }
+    } catch {
+      // Market price fetch failed; settlement will fallback to order.buyFilledPrice
     }
 
-    // Cancel all pending / tp_placed paper orders
-    await this.prisma.paperOrder.updateMany({
-      where: { paperStrategyId: strategyId, status: { in: ['pending', 'tp_placed'] } },
-      data: { status: 'canceled' },
+    const result = await this.prisma.$transaction(async (tx) => {
+      // 1. Atomically claim strategy status: active -> stopped
+      const claim = await tx.paperStrategy.updateMany({
+        where: { id: strategyId, userId, status: 'active' },
+        data: { status: 'stopped', stoppedAt: new Date() },
+      });
+
+      if (claim.count === 0) {
+        throw new BadRequestException('Paper strategy is not active or already stopped');
+      }
+
+      // 2. Fetch strategy with paperAccount and un-finalized orders
+      const strategy = await tx.paperStrategy.findUniqueOrThrow({
+        where: { id: strategyId },
+        include: {
+          paperAccount: true,
+          paperOrders: {
+            where: { status: { in: ['pending', 'tp_placed'] } },
+          },
+        },
+      });
+
+      let totalRefundUsdt = 0;
+      let pendingRefundUsdt = 0;
+      let tpSettleProceedsUsdt = 0;
+      let totalRealizedPnlFromSettle = 0;
+
+      // 3. Process un-finalized orders for refund & position settlement
+      for (const order of strategy.paperOrders) {
+        if (order.status === 'pending') {
+          // Order was never executed — full refund of reserved allocated capital
+          pendingRefundUsdt += order.allocatedCapital;
+          totalRefundUsdt += order.allocatedCapital;
+
+          await tx.paperOrder.update({
+            where: { id: order.id },
+            data: { status: 'canceled' },
+          });
+        } else if (order.status === 'tp_placed') {
+          // Position is open (BUY filled, waiting for TP). Settle position at market price.
+          const settlePrice = currentMarketPrice && currentMarketPrice > 0
+            ? currentMarketPrice
+            : (order.buyFilledPrice || order.gridPrice);
+
+          const fill = this.paperExchangeEngine.simulateMarketSell(
+            order.buyFilledQuantity || (order.allocatedCapital / settlePrice),
+            order.buyFilledPrice || order.gridPrice,
+            order.buyFee || 0,
+            settlePrice,
+          );
+
+          const proceeds = (fill.filledQuantity * fill.filledPrice) - fill.fee;
+          tpSettleProceedsUsdt += proceeds;
+          totalRefundUsdt += proceeds;
+          totalRealizedPnlFromSettle += (fill.realizedPnl || 0);
+
+          await tx.paperOrder.update({
+            where: { id: order.id },
+            data: {
+              status: 'canceled',
+              tpFilledPrice: fill.filledPrice,
+              tpFee: fill.fee,
+              realizedPnl: fill.realizedPnl,
+            },
+          });
+        }
+      }
+
+      // 4. Increment refunded capital + open position proceeds back to virtualBalance
+      if (totalRefundUsdt > 0) {
+        await tx.paperAccount.update({
+          where: { id: strategy.paperAccountId },
+          data: { virtualBalance: { increment: Number(totalRefundUsdt.toFixed(6)) } },
+        });
+      }
+
+      const updatedAccount = await tx.paperAccount.findUniqueOrThrow({
+        where: { id: strategy.paperAccountId },
+      });
+
+      return {
+        strategyId,
+        pair: strategy.pair,
+        status: 'stopped',
+        stoppedAt: new Date(),
+        refundedAmountUsdt: Number(totalRefundUsdt.toFixed(2)),
+        pendingRefundUsdt: Number(pendingRefundUsdt.toFixed(2)),
+        tpSettleProceedsUsdt: Number(tpSettleProceedsUsdt.toFixed(2)),
+        settleRealizedPnl: Number(totalRealizedPnlFromSettle.toFixed(6)),
+        virtualBalance: Number(updatedAccount.virtualBalance.toFixed(2)),
+      };
     });
 
-    // Send Telegram notification when paper strategy stops
+    // 5. Send Telegram notification
     const telegramConfig = this.getTelegramConfig();
     if (telegramConfig) {
       await this.notificationService.sendEvent(
         'strategy_stopped',
-        { strategyId, pair: 'paper', mode: 'paper' },
+        { strategyId, pair: result.pair, mode: 'paper' },
         telegramConfig,
       );
     }
 
-    return { strategyId, status: 'stopped', stoppedAt: new Date() };
+    this.logger.info('Paper trading strategy stopped with refund', {
+      strategyId,
+      refundedAmountUsdt: result.refundedAmountUsdt,
+      newVirtualBalance: result.virtualBalance,
+    });
+
+    return result;
   }
 
   /**
