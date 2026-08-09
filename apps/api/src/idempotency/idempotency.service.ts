@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import type { Prisma } from '@prisma/client';
 
 /**
  * Idempotency Service
@@ -25,7 +26,7 @@ export class IdempotencyService {
     userId: string,
     key: string,
     endpoint: string
-  ): Promise<unknown | null> {
+  ): Promise<unknown> {
     try {
       const record = await this.prisma.idempotencyKey.findUnique({
         where: { key },
@@ -38,8 +39,9 @@ export class IdempotencyService {
 
       this.logger.log(`[Idempotency] Key ${key} already processed. Returning cached response.`);
       return record.response;
-    } catch (err: any) {
-      this.logger.warn(`[Idempotency] Failed to check key ${key}:`, err.message);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`[Idempotency] Failed to check key ${key}:`, msg);
       return null;
     }
   }
@@ -62,18 +64,19 @@ export class IdempotencyService {
           key,
           userId,
           endpoint,
-          response: response as any,
+          response: response as Prisma.InputJsonValue,
           expiresAt,
         },
         update: {
-          response: response as any,
+          response: response as Prisma.InputJsonValue,
           expiresAt,
         },
       });
 
       this.logger.log(`[Idempotency] Stored response for key ${key} (${endpoint})`);
-    } catch (err: any) {
-      this.logger.warn(`[Idempotency] Failed to store key ${key}:`, err.message);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`[Idempotency] Failed to store key ${key}:`, msg);
     }
   }
 }

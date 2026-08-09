@@ -44,7 +44,7 @@ export default function Home() {
       setAuthenticated(true);
       setCheckingAuth(false);
       // Try to refresh the token in the background
-      refreshTokens().then((auth) => {
+      void refreshTokens().then((auth) => {
         if (auth) {
           setUser(auth.user);
         }
@@ -63,10 +63,10 @@ export default function Home() {
     realtimeClient.connect();
 
     // Update status indicator on connect/disconnect
-    const ws = (realtimeClient as any).ws;
+    const wsClient = realtimeClient as unknown as { ws?: WebSocket };
     const statusTimer = setInterval(() => {
       setRealtimeStatus(
-        ws && ws.readyState === WebSocket.OPEN ? 'connected' : 'disconnected'
+        wsClient.ws && wsClient.ws.readyState === WebSocket.OPEN ? 'connected' : 'disconnected'
       );
     }, 5000);
 
@@ -180,7 +180,7 @@ export default function Home() {
           setSelectedExchange={setSelectedExchange}
           realtimeStatus={realtimeStatus}
           user={user}
-          onLogout={handleLogout}
+          onLogout={() => void handleLogout()}
         />
 
         {/* Scrollable Page Content */}

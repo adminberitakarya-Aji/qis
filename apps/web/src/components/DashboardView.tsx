@@ -143,12 +143,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateToStrate
 
   // Initial fetch on mount
   useEffect(() => {
-    fetchPairs();
+    void fetchPairs();
   }, [fetchPairs]);
 
   // Auto-refresh every 15 minutes
   useEffect(() => {
-    const interval = setInterval(fetchPairs, 15 * 60 * 1000);
+    const interval = setInterval(() => {
+      void fetchPairs();
+    }, 15 * 60 * 1000);
     return () => clearInterval(interval);
   }, [fetchPairs]);
 
@@ -235,7 +237,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateToStrate
                 <Loader2 className="w-4 h-4 text-zinc-500 animate-spin" />
               )}
               <button
-                onClick={fetchPairs}
+                onClick={() => void fetchPairs()}
                 disabled={isLoading}
                 title="Refresh AI Recommendations"
                 className="p-1.5 rounded-lg bg-pitch-surface border border-pitch-border text-zinc-400 hover:text-white hover:border-electric-blue transition-all disabled:opacity-50"

@@ -14,6 +14,36 @@ import {
 } from 'lucide-react';
 import { buildStrategy, runSimulation } from '@/lib/api';
 
+interface BlueprintSection {
+  index: number;
+  allocationPercent: number;
+  allocatedCapitalUsdt?: number;
+  gridCount: number;
+  gridDistancePercent: number;
+  sectionGapPercent: number;
+  minNetProfitPercent: number;
+}
+
+interface BlueprintSimulation {
+  estimatedNetProfitUsdt: number;
+  estimatedNetProfitPercent: number;
+  totalFeesUsdt: number;
+  maxDrawdownPercent: number;
+  completedRounds: number;
+}
+
+interface Blueprint {
+  id: string;
+  pair: string;
+  tradingCapital: number;
+  sectionCount: number;
+  confidenceScore?: number;
+  aiReasoning?: string;
+  sections: BlueprintSection[];
+  simulation: BlueprintSimulation;
+  expiresAt?: string;
+}
+
 interface AiStrategyViewProps {
   initialPair?: string;
   onStrategyApproved: () => void;
@@ -32,7 +62,7 @@ export const AiStrategyView: React.FC<AiStrategyViewProps> = ({
 
   // Generated Blueprint State
   const [isBuilding, setIsBuilding] = useState(false);
-  const [blueprint, setBlueprint] = useState<any>(null);
+  const [blueprint, setBlueprint] = useState<Blueprint | null>(null);
   const [isExecuting, setIsExecuting] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
 
@@ -58,11 +88,12 @@ export const AiStrategyView: React.FC<AiStrategyViewProps> = ({
 
     if (bp) {
       // Run simulation with returned blueprint ID
-      const simData = await runSimulation(bp.id);
+      const bpId = (bp as { id?: string }).id ?? '';
+      const simData = await runSimulation(bpId);
 
       setBlueprint({
-        ...bp,
-        simulation: simData || {
+        ...(bp as unknown as Blueprint),
+        simulation: (simData as unknown as BlueprintSimulation) || {
           estimatedNetProfitUsdt: Number((capital * 0.084).toFixed(2)),
           estimatedNetProfitPercent: 8.4,
           totalFeesUsdt: Number((capital * 0.006).toFixed(2)),
@@ -269,7 +300,7 @@ export const AiStrategyView: React.FC<AiStrategyViewProps> = ({
 
           {/* AI Build Button */}
           <button
-            onClick={handleBuildStrategy}
+            onClick={() => void handleBuildStrategy()}
             disabled={isBuilding}
             className="w-full py-3.5 rounded-xl bg-gradient-to-r from-electric-blue to-neon-purple text-white font-extrabold text-sm shadow-lg shadow-electric-blue/20 hover:opacity-95 transition-all flex items-center justify-center gap-2 glow-blue"
           >
@@ -343,7 +374,7 @@ export const AiStrategyView: React.FC<AiStrategyViewProps> = ({
                   </h4>
 
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    {blueprint.sections.map((sec: any) => (
+                    {blueprint.sections.map((sec) => (
                       <div
                         key={sec.index}
                         className="p-4 rounded-xl bg-pitch-surface border border-pitch-border space-y-2"

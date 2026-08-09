@@ -71,8 +71,9 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess, initialMode = 'lo
         setSuccess('Registration successful! Redirecting...');
       }
       setTimeout(onSuccess, 800);
-    } catch (err: any) {
-      setError(err.message || 'Authentication failed. Please try again.');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg || 'Authentication failed. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -157,7 +158,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess, initialMode = 'lo
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={(e) => void handleSubmit(e)} className="space-y-4">
             {/* Name - Register Only */}
             {mode === 'register' && (
               <div>

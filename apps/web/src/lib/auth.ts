@@ -20,6 +20,12 @@ export interface AuthTokens {
   user: User;
 }
 
+interface ApiAuthResponse {
+  data?: AuthTokens;
+  message?: string | string[];
+  detail?: string | string[];
+}
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api/v1';
 
 // ============================================================
@@ -69,13 +75,13 @@ export async function login(email: string, password: string): Promise<AuthTokens
     body: JSON.stringify({ email, password }),
   });
 
-  const json = await res.json();
+  const json = (await res.json()) as ApiAuthResponse;
   if (!res.ok) {
     const message = json.message || json.detail || 'Login failed';
     throw new Error(Array.isArray(message) ? message.join(', ') : message);
   }
 
-  const auth = json.data as AuthTokens;
+  const auth = json.data!;
   storeAuth(auth);
   return auth;
 }
@@ -91,13 +97,13 @@ export async function register(
     body: JSON.stringify({ email, password, name }),
   });
 
-  const json = await res.json();
+  const json = (await res.json()) as ApiAuthResponse;
   if (!res.ok) {
     const message = json.message || json.detail || 'Registration failed';
     throw new Error(Array.isArray(message) ? message.join(', ') : message);
   }
 
-  const auth = json.data as AuthTokens;
+  const auth = json.data!;
   storeAuth(auth);
   return auth;
 }
@@ -113,10 +119,10 @@ export async function refreshTokens(): Promise<AuthTokens | null> {
       body: JSON.stringify({ refreshToken }),
     });
 
-    const json = await res.json();
-    if (!res.ok) return null;
+    const json = (await res.json()) as ApiAuthResponse;
+    if (!res.ok || !json.data) return null;
 
-    const auth = json.data as AuthTokens;
+    const auth = json.data;
     storeAuth(auth);
     return auth;
   } catch {

@@ -4,11 +4,15 @@ import { createServiceLogger } from '@qis/logger';
 
 const logger = createServiceLogger('qis-api:prisma');
 
+export interface OpsAlertingNotifier {
+  databaseConnectionError(details: { error: string }): Promise<void>;
+}
+
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
-  private opsAlerting: any = null;
+  private opsAlerting: OpsAlertingNotifier | null = null;
 
-  setOpsAlerting(alerting: any) {
+  setOpsAlerting(alerting: OpsAlertingNotifier) {
     this.opsAlerting = alerting;
   }
 
@@ -16,11 +20,12 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     try {
       await this.$connect();
       logger.info('Database connected successfully');
-    } catch (err: any) {
-      logger.error('Database connection failed', {}, err);
+    } catch (err: unknown) {
+      const errorObj = err instanceof Error ? err : new Error(String(err));
+      logger.error('Database connection failed', {}, errorObj);
       if (this.opsAlerting) {
         await this.opsAlerting.databaseConnectionError({
-          error: err.message,
+          error: errorObj.message,
         });
       }
       throw err;

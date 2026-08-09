@@ -27,4 +27,4 @@ async function bootstrap() {
   logger.info('Qis API running', { url: `http://localhost:${port}/api/v1` });
 }
 
-bootstrap();
+void bootstrap();

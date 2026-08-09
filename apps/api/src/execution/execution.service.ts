@@ -12,7 +12,7 @@ import { StartExecutionDto } from './dto/start-execution.dto';
 import { StartPaperExecutionDto } from './dto/start-paper-execution.dto';
 import { EXCHANGE_ENGINE } from '../engines/engines.module';
 import { ExchangeEngine, type DecryptContext } from '@qis/exchange-engine';
-import { ExecutionEngine, type ExecutionOrderState } from '@qis/execution-engine';
+import { ExecutionEngine, type ExecutionOrderState, type OrderStatus } from '@qis/execution-engine';
 import { PaperExchangeEngine } from '@qis/paper-exchange-engine';
 import { GridEngine } from '@qis/grid-engine';
 import type { Blueprint } from '@qis/shared';
@@ -308,7 +308,7 @@ export class ExecutionService {
         tpPrice: o.tpPrice,
         allocatedCapital: o.allocatedCapital,
         estimatedQuantity: o.estimatedQuantity,
-        status: o.status as any,
+        status: o.status as OrderStatus,
         buyFilledPrice: o.buyFilledPrice,
         buyFilledQuantity: o.buyFilledQuantity,
         buyFee: o.buyFee,
@@ -341,12 +341,13 @@ export class ExecutionService {
           canceled: cancelResult.canceled,
           errors: cancelResult.errors,
         });
-      } catch (err: any) {
+      } catch (err: unknown) {
         // Unhandled error in stopExecution — this is a critical operational event
+        const error = err instanceof Error ? err : new Error(String(err));
         await this.opsAlerting.stopExecutionError({
           strategyId,
-          error: err.message,
-          stack: err.stack,
+          error: error.message,
+          stack: error.stack,
         });
         throw err;
       }
@@ -399,7 +400,7 @@ export class ExecutionService {
           tpPrice: o.tpPrice,
           allocatedCapital: o.allocatedCapital,
           estimatedQuantity: o.estimatedQuantity,
-          status: o.status as any,
+          status: o.status as OrderStatus,
           buyFilledPrice: o.buyFilledPrice,
           buyFilledQuantity: o.buyFilledQuantity,
           buyFee: o.buyFee,
@@ -541,13 +542,13 @@ export class ExecutionService {
     });
 
     // Execute each selected order
-    const executed: any[] = [];
+    const executed: Record<string, unknown>[] = [];
     for (const order of ordersToExecute) {
       try {
         const result = await this.triggerGridOrder(order.id, triggeredPrice);
-        executed.push(result);
-      } catch (err: any) {
-        this.logger.error('Batch trigger failed for order', { orderId: order.id }, err);
+        executed.push(result as Record<string, unknown>);
+      } catch (err: unknown) {
+        this.logger.error('Batch trigger failed for order', { orderId: order.id }, err instanceof Error ? err : new Error(String(err)));
         ordersSkipped.push(order.id);
       }
     }
@@ -765,13 +766,14 @@ export class ExecutionService {
         exchangeOrderId: fillResult.exchangeOrderId,
         tpExchangeOrderId: fillResult.tpExchangeOrderId,
       };
-    } catch (err: any) {
+    } catch (err: unknown) {
       // Unhandled error in triggerGridOrder — this is a critical operational event
+      const error = err instanceof Error ? err : new Error(String(err));
       await this.opsAlerting.triggerGridOrderError({
         orderId,
         strategyId: strategy.id,
-        error: err.message,
-        stack: err.stack,
+        error: error.message,
+        stack: error.stack,
       });
 
       // Mark order as error so it doesn't look like a real fill

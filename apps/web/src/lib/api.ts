@@ -50,12 +50,13 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T | nul
       return null;
     }
 
-    const json = await res.json();
+    const json = (await res.json()) as { data?: T };
     // Handle both { data: T } and direct T responses
-    return (json.data ?? json) as T;
-  } catch (err: any) {
+    return (json.data ?? (json as unknown as T));
+  } catch (err: unknown) {
     // Network error — backend not running, fail gracefully
-    console.warn(`[API] ${path} unreachable:`, err.message);
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[API] ${path} unreachable:`, msg);
     return null;
   }
 }
@@ -116,15 +117,15 @@ export interface BuildStrategyRequest {
   riskPreference?: 'conservative' | 'balanced' | 'aggressive';
 }
 
-export async function buildStrategy(req: BuildStrategyRequest): Promise<any | null> {
-  return apiFetch<any>('/strategy/build', {
+export async function buildStrategy(req: BuildStrategyRequest): Promise<Record<string, unknown> | null> {
+  return apiFetch<Record<string, unknown>>('/strategy/build', {
     method: 'POST',
     body: JSON.stringify(req),
   });
 }
 
-export async function runSimulation(blueprintId: string): Promise<any | null> {
-  return apiFetch<any>('/simulation/run', {
+export async function runSimulation(blueprintId: string): Promise<Record<string, unknown> | null> {
+  return apiFetch<Record<string, unknown>>('/simulation/run', {
     method: 'POST',
     body: JSON.stringify({ blueprintId }),
   });

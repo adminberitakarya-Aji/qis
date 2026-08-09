@@ -73,8 +73,8 @@ export class OpsAlertingService implements OnModuleInit {
     try {
       await this.notificationEngine.notify(payload, this.config);
       logger.info('Ops alert sent', { event: event.event, severity: event.severity });
-    } catch (err: any) {
-      logger.error('Failed to send ops alert', { event: event.event }, err);
+    } catch (err: unknown) {
+      logger.error('Failed to send ops alert', { event: event.event }, err instanceof Error ? err : new Error(String(err)));
     }
   }
 

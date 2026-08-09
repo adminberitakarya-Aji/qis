@@ -49,8 +49,9 @@ export class StrategyService {
           expiresAt: blueprint.expiresAt,
         },
       });
-    } catch (dbErr: any) {
-      console.warn(`[StrategyService] Database persistence skipped (${dbErr.message}). Using in-memory store.`);
+    } catch (dbErr: unknown) {
+      const msg = dbErr instanceof Error ? dbErr.message : String(dbErr);
+      console.warn(`[StrategyService] Database persistence skipped (${msg}). Using in-memory store.`);
     }
 
     return blueprint;
@@ -82,13 +83,13 @@ export class StrategyService {
         const blueprint: Blueprint = {
           id: dbBp.id,
           userId: dbBp.userId,
-          exchange: dbBp.exchange as any,
+          exchange: dbBp.exchange as Blueprint['exchange'],
           pair: dbBp.pair,
           tradingCapital: dbBp.tradingCapital,
-          sectionCount: dbBp.sectionCount as any,
-          sections: JSON.parse(dbBp.sectionsJson as string),
+          sectionCount: dbBp.sectionCount,
+          sections: JSON.parse(dbBp.sectionsJson as string) as Blueprint['sections'],
           capitalProtectionFloor: dbBp.capitalProtectionFloor,
-          floorAction: dbBp.floorAction as any,
+          floorAction: dbBp.floorAction as Blueprint['floorAction'],
           maxCapitalPerMovementPercent: dbBp.maxCapitalPerMovementPercent,
           maxDrawdownAlertPercent: dbBp.maxDrawdownAlertPercent,
           confidenceScore: dbBp.confidenceScore,
@@ -100,9 +101,10 @@ export class StrategyService {
         this.blueprintStore.set(blueprint.id, blueprint);
         return blueprint;
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (err instanceof ForbiddenException) throw err;
-      console.warn(`[StrategyService] Failed to query database for blueprint ${id}:`, err.message);
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[StrategyService] Failed to query database for blueprint ${id}:`, msg);
     }
 
     throw new NotFoundException(`Strategy Blueprint with ID ${id} not found`);
