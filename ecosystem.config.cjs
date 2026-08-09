@@ -96,10 +96,11 @@ module.exports = {
     },
     {
       name: 'qis-ai-service',
-      script: 'uvicorn',
-      args: 'main:app --host 0.0.0.0 --port 8000',
+      script: 'main.py',
       cwd: './apps/ai-service',
-      interpreter: 'python3',
+      interpreter: fs.existsSync(path.join(__dirname, 'apps/ai-service/venv/bin/python'))
+        ? './venv/bin/python'
+        : 'python3',
       instances: 1,
       autorestart: true,
       watch: false,
