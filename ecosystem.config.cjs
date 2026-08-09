@@ -50,8 +50,8 @@ module.exports = {
   apps: [
     {
       name: 'qis-api',
-      script: './apps/api/dist/main.js',
-      cwd: './',
+      script: path.join(__dirname, 'apps/api/dist/main.js'),
+      cwd: __dirname,
       instances: 1,
       autorestart: true,
       watch: false,
@@ -77,8 +77,8 @@ module.exports = {
     },
     {
       name: 'qis-worker',
-      script: './apps/worker/dist/index.js',
-      cwd: './',
+      script: path.join(__dirname, 'apps/worker/dist/index.js'),
+      cwd: __dirname,
       instances: 1,
       autorestart: true,
       watch: false,
@@ -97,9 +97,9 @@ module.exports = {
     {
       name: 'qis-ai-service',
       script: 'main.py',
-      cwd: './apps/ai-service',
+      cwd: path.join(__dirname, 'apps/ai-service'),
       interpreter: fs.existsSync(path.join(__dirname, 'apps/ai-service/venv/bin/python'))
-        ? './venv/bin/python'
+        ? path.join(__dirname, 'apps/ai-service/venv/bin/python')
         : 'python3',
       instances: 1,
       autorestart: true,
@@ -114,8 +114,8 @@ module.exports = {
       // to your Telegram automatically so you can update Vercel's env
       // vars right away. Requires `cloudflared` installed on the server.
       name: 'qis-tunnel',
-      script: './infrastructure/tunnel-with-telegram.sh',
-      cwd: './',
+      script: path.join(__dirname, 'infrastructure/tunnel-with-telegram.sh'),
+      cwd: __dirname,
       instances: 1,
       autorestart: true,
       watch: false,
