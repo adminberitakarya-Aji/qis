@@ -1,16 +1,18 @@
 'use client';
 
-import type { FormEvent} from 'react';
+import type { FormEvent } from 'react';
 import React, { useState } from 'react';
-import { Zap, Mail, Lock, User as UserIcon, Loader2, Eye, EyeOff, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Zap, Mail, Lock, User as UserIcon, Loader2, Eye, EyeOff, AlertCircle, CheckCircle2, X } from 'lucide-react';
 import { login, register } from '@/lib/auth';
 
 interface AuthPageProps {
   onSuccess: () => void;
+  initialMode?: 'login' | 'register';
+  onClose?: () => void;
 }
 
-export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
-  const [mode, setMode] = useState<'login' | 'register'>('login');
+export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess, initialMode = 'login', onClose }) => {
+  const [mode, setMode] = useState<'login' | 'register'>(initialMode);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -94,12 +96,23 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
     } text-zinc-100`;
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-pitch-bg relative overflow-hidden p-4">
+    <div className="min-h-screen flex items-center justify-center bg-pitch-bg/90 backdrop-blur-md fixed inset-0 z-50 p-4 overflow-y-auto">
       {/* Background Glow Effects */}
-      <div className="absolute top-[-20%] left-[-10%] w-[500px] h-[500px] rounded-full bg-electric-blue/10 blur-[120px]" />
-      <div className="absolute bottom-[-20%] right-[-10%] w-[500px] h-[500px] rounded-full bg-neon-purple/10 blur-[120px]" />
+      <div className="absolute top-[-20%] left-[-10%] w-[500px] h-[500px] rounded-full bg-electric-blue/10 blur-[120px] pointer-events-none" />
+      <div className="absolute bottom-[-20%] right-[-10%] w-[500px] h-[500px] rounded-full bg-neon-purple/10 blur-[120px] pointer-events-none" />
 
-      <div className="relative w-full max-w-md">
+      <div className="relative w-full max-w-md my-8">
+        {/* Close Button if rendered as modal */}
+        {onClose && (
+          <button
+            onClick={onClose}
+            className="absolute -top-12 right-0 p-2 text-zinc-400 hover:text-white transition-colors rounded-full bg-zinc-800/80 border border-zinc-700/60"
+            title="Close"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        )}
+
         {/* Brand */}
         <div className="text-center mb-8">
           <div className="inline-flex items-center gap-3 mb-4">
@@ -127,7 +140,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
         </div>
 
         {/* Card */}
-        <div className="bg-pitch-card border border-pitch-border rounded-2xl p-6 shadow-2xl">
+        <div className="bg-pitch-card border border-pitch-border rounded-2xl p-6 shadow-2xl relative">
           {/* Error Alert */}
           {error && (
             <div className="mb-4 p-3.5 rounded-xl bg-red-500/10 border border-red-500/30 flex items-start gap-3">
@@ -262,7 +275,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
               disabled={loading}
               className="w-full py-3 rounded-xl bg-gradient-to-r from-electric-blue to-neon-purple text-white font-semibold text-sm
                 hover:opacity-90 transition-all shadow-lg glow-blue disabled:opacity-50 disabled:cursor-not-allowed
-                flex items-center justify-center gap-2"
+                flex items-center justify-center gap-2 cursor-pointer"
             >
               {loading ? (
                 <>
@@ -284,7 +297,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
                 Don't have an account?{' '}
                 <button
                   onClick={() => switchMode('register')}
-                  className="text-electric-blue hover:text-electric-blue/80 font-semibold transition-colors"
+                  className="text-electric-blue hover:text-electric-blue/80 font-semibold transition-colors cursor-pointer"
                 >
                   Create one
                 </button>
@@ -294,7 +307,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccess }) => {
                 Already have an account?{' '}
                 <button
                   onClick={() => switchMode('login')}
-                  className="text-electric-blue hover:text-electric-blue/80 font-semibold transition-colors"
+                  className="text-electric-blue hover:text-electric-blue/80 font-semibold transition-colors cursor-pointer"
                 >
                   Sign in
                 </button>

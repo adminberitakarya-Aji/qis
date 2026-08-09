@@ -274,7 +274,13 @@ model PaperStrategy {
   id             String   @id @default(cuid())
   userId         String
   paperAccountId String
-  blueprintId    String
+  blueprintId    String   @unique
+  // @unique mirrors GridStrategy.blueprintId: a Blueprint may only ever
+  // back ONE PaperStrategy row (across its whole lifecycle, not just while
+  // active). This is a hard DB-level guard against duplicate/concurrent
+  // paper-strategy starts on the same Blueprint — see the try/catch around
+  // tx.paperStrategy.create() in ExecutionService.startPaperExecution(),
+  // which turns the resulting P2002 into a clean 400 error.
   exchange       String // 'binance' | 'bybit'
   pair           String // e.g. 'BTC/USDT'
   capital        Float // Total virtual trading capital in USDT

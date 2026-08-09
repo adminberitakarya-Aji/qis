@@ -5,6 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { StrategyService } from '../strategy/strategy.service';
 import { StartExecutionDto } from './dto/start-execution.dto';
@@ -803,42 +804,26 @@ export class ExecutionService {
       );
     }
 
-    // 2. Get or create paper account (default $100 virtual balance)
-    let paperAccount = await this.prisma.paperAccount.findFirst({
-      where: { userId, exchange: blueprint.exchange },
+    // 1.5. Reject early if this Blueprint already has a PaperStrategy
+    //      (any status — mirrors the real GridStrategy lifecycle, where a
+    //      Blueprint may only ever back one strategy). This is a friendly
+    //      pre-check for the common case; it is NOT the actual race guard
+    //      — two concurrent requests can both pass this check. The real
+    //      guard is the `blueprintId @unique` DB constraint, enforced
+    //      atomically at INSERT time inside the transaction below (step 4c).
+    const existingPaperStrategy = await this.prisma.paperStrategy.findUnique({
+      where: { blueprintId: dto.blueprintId },
     });
-    if (!paperAccount) {
-      paperAccount = await this.prisma.paperAccount.create({
-        data: {
-          userId,
-          exchange: blueprint.exchange,
-          label: 'Paper Trading',
-          virtualBalance: 100,
-        },
-      });
-    }
-
-    // 3. Check virtual balance is sufficient
-    if (paperAccount.virtualBalance < blueprint.tradingCapital) {
+    if (existingPaperStrategy) {
       throw new BadRequestException(
-        `Virtual balance insufficient for this strategy. Available: $${paperAccount.virtualBalance}, Required: $${blueprint.tradingCapital}`,
+        `A paper strategy already exists for this Blueprint (status: ${existingPaperStrategy.status}). Generate a new Blueprint to start another paper strategy.`,
       );
     }
 
-    // 4. Create PaperStrategy record
-    const paperStrategy = await this.prisma.paperStrategy.create({
-      data: {
-        userId,
-        paperAccountId: paperAccount.id,
-        blueprintId: blueprint.id,
-        exchange: blueprint.exchange,
-        pair: blueprint.pair,
-        capital: blueprint.tradingCapital,
-        status: 'active',
-      },
-    });
-
-    // 5. Get current market price to anchor grid levels
+    // 2. Get current market price to anchor grid levels. This is a network
+    //    call and MUST happen before the DB transaction below — never
+    //    inside it, since holding a transaction open across an external
+    //    HTTP call risks long-lived DB locks and transaction timeouts.
     let currentPrice = 100;
     try {
       const { ExchangeEngine: ExchangeEngineClass } = await import('@qis/exchange-engine');
@@ -852,7 +837,8 @@ export class ExecutionService {
       // fallback price
     }
 
-    // 6. Build grid from blueprint
+    // 3. Build grid from blueprint. Pure computation (no DB/network), safe
+    //    to run outside the transaction.
     const gridResult = this.gridEngine.buildGrid({
       currentPrice,
       totalCapital: blueprint.tradingCapital,
@@ -865,31 +851,114 @@ export class ExecutionService {
       })),
     });
 
-    // 7. Persist PaperOrder records with 'pending' status
-    const paperOrderData = gridResult.sections.flatMap((section) =>
-      section.orders.map((order) => ({
-        paperStrategyId: paperStrategy.id,
-        sectionIndex: order.sectionIndex,
-        orderIndex: order.orderIndex,
-        globalOrderIndex: order.globalOrderIndex,
-        clientOrderId: `${paperStrategy.id}_g${order.globalOrderIndex}`,
-        gridPrice: order.gridPrice,
-        tpPrice: order.estimatedTpPrice,
-        allocatedCapital: order.allocatedCapitalUsdt,
-        estimatedQuantity: order.estimatedQuantity,
-        status: 'pending',
-      })),
-    );
+    // 4. Get-or-create the paper account, verify + deduct virtual balance,
+    //    create the PaperStrategy, and persist PaperOrder rows — ALL inside
+    //    one transaction with a conditional decrement (`gte` guard in the
+    //    WHERE clause). This replaces the old "read balance → check →
+    //    later write balance - capital" pattern, which was a classic
+    //    check-then-write race: two concurrent starts could both read the
+    //    same balance, both pass the check, and both deduct from the same
+    //    stale value (double-spending the same virtual capital, or driving
+    //    the balance negative). The `updateMany` below either atomically
+    //    claims the capital (count === 1) or claims nothing (count === 0)
+    //    — there's no window where two callers can both succeed against
+    //    the same funds.
+    const result = await this.prisma.$transaction(async (tx) => {
+      // 4a. Get or create paper account (default $100 virtual balance).
+      //     upsert() on the compound unique key avoids the separate
+      //     findFirst()/create() race, where two concurrent first-time
+      //     starts could both fail to find an account and both attempt
+      //     to create one.
+      const paperAccount = await tx.paperAccount.upsert({
+        where: {
+          userId_exchange_label: {
+            userId,
+            exchange: blueprint.exchange,
+            label: 'Paper Trading',
+          },
+        },
+        update: {},
+        create: {
+          userId,
+          exchange: blueprint.exchange,
+          label: 'Paper Trading',
+          virtualBalance: 100,
+        },
+      });
 
-    await this.prisma.paperOrder.createMany({ data: paperOrderData });
+      // 4b. Atomic balance check + deduct in a single conditional write.
+      const claim = await tx.paperAccount.updateMany({
+        where: { id: paperAccount.id, virtualBalance: { gte: blueprint.tradingCapital } },
+        data: { virtualBalance: { decrement: blueprint.tradingCapital } },
+      });
 
-    // 8. Deduct capital from virtual balance
-    await this.prisma.paperAccount.update({
-      where: { id: paperAccount.id },
-      data: { virtualBalance: paperAccount.virtualBalance - blueprint.tradingCapital },
+      if (claim.count === 0) {
+        throw new BadRequestException(
+          `Virtual balance insufficient for this strategy. Available: $${paperAccount.virtualBalance}, Required: $${blueprint.tradingCapital}`,
+        );
+      }
+
+      // 4c. Create PaperStrategy record. blueprintId is @unique at the DB
+      //     level (see schema.prisma), so this INSERT is the atomic guard
+      //     against duplicate/concurrent paper-strategy starts on the same
+      //     Blueprint — even if two requests both pass the step-1.5
+      //     pre-check, only one INSERT can succeed here; the loser hits a
+      //     unique-constraint violation (Prisma P2002), which we translate
+      //     into a normal 400 instead of a raw 500.
+      let paperStrategy;
+      try {
+        paperStrategy = await tx.paperStrategy.create({
+          data: {
+            userId,
+            paperAccountId: paperAccount.id,
+            blueprintId: blueprint.id,
+            exchange: blueprint.exchange,
+            pair: blueprint.pair,
+            capital: blueprint.tradingCapital,
+            status: 'active',
+          },
+        });
+      } catch (err) {
+        if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+          throw new BadRequestException(
+            'A paper strategy already exists for this Blueprint.',
+          );
+        }
+        throw err;
+      }
+
+      // 4d. Persist PaperOrder records with 'pending' status
+      const paperOrderData = gridResult.sections.flatMap((section) =>
+        section.orders.map((order) => ({
+          paperStrategyId: paperStrategy.id,
+          sectionIndex: order.sectionIndex,
+          orderIndex: order.orderIndex,
+          globalOrderIndex: order.globalOrderIndex,
+          clientOrderId: `${paperStrategy.id}_g${order.globalOrderIndex}`,
+          gridPrice: order.gridPrice,
+          tpPrice: order.estimatedTpPrice,
+          allocatedCapital: order.allocatedCapitalUsdt,
+          estimatedQuantity: order.estimatedQuantity,
+          status: 'pending',
+        })),
+      );
+
+      await tx.paperOrder.createMany({ data: paperOrderData });
+
+      // 4e. Re-read the account for the post-deduction balance to return
+      //     to the caller (avoids relying on a client-side recomputation).
+      const paperAccountAfter = await tx.paperAccount.findUniqueOrThrow({
+        where: { id: paperAccount.id },
+      });
+
+      return { paperStrategy, paperAccountAfter, paperOrderCount: paperOrderData.length };
     });
 
-    // Send Telegram notification when paper strategy starts
+    const { paperStrategy, paperAccountAfter, paperOrderCount } = result;
+
+    // 5. Send Telegram notification when paper strategy starts. Outside the
+    //    transaction on purpose — notification delivery must never roll
+    //    back a trade that already committed successfully.
     const telegramConfig = this.getTelegramConfig();
     if (telegramConfig) {
       await this.notificationService.sendEvent(
@@ -903,7 +972,7 @@ export class ExecutionService {
       strategyId: paperStrategy.id,
       pair: blueprint.pair,
       capital: blueprint.tradingCapital,
-      gridLevels: paperOrderData.length,
+      gridLevels: paperOrderCount,
     });
 
     return {
@@ -913,10 +982,10 @@ export class ExecutionService {
       exchange: blueprint.exchange,
       capital: blueprint.tradingCapital,
       status: 'active',
-      virtualBalanceRemaining: paperAccount.virtualBalance - blueprint.tradingCapital,
+      virtualBalanceRemaining: paperAccountAfter.virtualBalance,
       ordersSummary: {
-        total: paperOrderData.length,
-        pending: paperOrderData.length,
+        total: paperOrderCount,
+        pending: paperOrderCount,
       },
     };
   }

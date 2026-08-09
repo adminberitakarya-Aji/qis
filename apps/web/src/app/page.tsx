@@ -11,6 +11,7 @@ import { PortfolioView } from '@/components/PortfolioView';
 import { AnalyticsView } from '@/components/AnalyticsView';
 import { ExchangesView } from '@/components/ExchangesView';
 import { AuthPage } from '@/components/AuthPage';
+import { LandingPage } from '@/components/LandingPage';
 import { realtimeClient } from '@/lib/realtime';
 import type { User } from '@/lib/auth';
 import { getStoredUser, clearAuth, logout, refreshTokens } from '@/lib/auth';
@@ -28,6 +29,7 @@ const PAGE_TITLES: Record<NavTab, string> = {
 export default function Home() {
   const [authenticated, setAuthenticated] = useState<boolean>(false);
   const [checkingAuth, setCheckingAuth] = useState(true);
+  const [authModal, setAuthModal] = useState<'login' | 'register' | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
   const [selectedExchange, setSelectedExchange] = useState<'binance' | 'bybit'>('binance');
@@ -78,6 +80,7 @@ export default function Home() {
     const storedUser = getStoredUser();
     setUser(storedUser);
     setAuthenticated(true);
+    setAuthModal(null);
   };
 
   const handleLogout = async () => {
@@ -85,6 +88,7 @@ export default function Home() {
     clearAuth();
     setUser(null);
     setAuthenticated(false);
+    setAuthModal(null);
     setActiveTab('dashboard');
     realtimeClient.disconnect();
   };
@@ -143,9 +147,24 @@ export default function Home() {
     );
   }
 
-  // Show auth page when not authenticated
+  // Show Landing Page when not authenticated, with modal auth option
   if (!authenticated) {
-    return <AuthPage onSuccess={handleAuthSuccess} />;
+    return (
+      <>
+        <LandingPage
+          onOpenLogin={() => setAuthModal('login')}
+          onOpenRegister={() => setAuthModal('register')}
+        />
+
+        {authModal && (
+          <AuthPage
+            initialMode={authModal}
+            onSuccess={handleAuthSuccess}
+            onClose={() => setAuthModal(null)}
+          />
+        )}
+      </>
+    );
   }
 
   return (
