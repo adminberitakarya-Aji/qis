@@ -31,6 +31,8 @@ export interface MarketTicker {
 export interface PortfolioSummary {
   totalCapitalUsdt: number;
   activeStrategies: number;
+  /** Array of unique pair symbols across active strategies, e.g. ['BTC/USDT', 'ETH/USDT'] */
+  activeStrategyPairs: string[];
   realizedPnl24hUsdt: number;
   totalRoundsCompleted: number;
   winRate: number;

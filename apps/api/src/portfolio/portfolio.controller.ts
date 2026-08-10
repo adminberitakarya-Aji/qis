@@ -6,7 +6,17 @@ import { PortfolioService } from './portfolio.service';
 @Controller('portfolio')
 @UseGuards(JwtAuthGuard)
 export class PortfolioController {
-  constructor(private readonly portfolioService: PortfolioService) {}
+  constructor(private readonly portfolioService: PortfolioService) { }
+
+  @Get('summary')
+  async getPortfolioSummary(@CurrentUser() user: { id: string }) {
+    const data = await this.portfolioService.getUserPortfolioSummary(user.id);
+    return {
+      success: true,
+      message: 'Portfolio summary retrieved',
+      data,
+    };
+  }
 
   @Get('overview/:exchangeAccountId')
   async getPortfolioOverview(

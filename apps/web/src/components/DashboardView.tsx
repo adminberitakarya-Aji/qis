@@ -13,8 +13,8 @@ import {
   Wifi,
   WifiOff,
 } from 'lucide-react';
-import type { PairRecommendation } from '@/lib/api';
-import { getTopPairRecommendations } from '@/lib/api';
+import type { PairRecommendation, PortfolioSummary } from '@/lib/api';
+import { getTopPairRecommendations, getPortfolioSummary } from '@/lib/api';
 
 interface DashboardViewProps {
   onNavigateToStrategy: (pair?: string) => void;
@@ -71,36 +71,7 @@ const FALLBACK_PAIRS: PairRecommendation[] = [
   },
 ];
 
-const DASHBOARD_METRICS = [
-  {
-    title: 'Total Portfolio Capital',
-    value: '$45,280.50',
-    subtitle: 'Across Binance & Bybit Spot',
-    change: '+12.4%',
-    isPositive: true,
-  },
-  {
-    title: 'Active Grid Strategies',
-    value: '3 Strategies',
-    subtitle: 'BTC/USDT, ETH/USDT, SOL/USDT',
-    change: 'RUNNING',
-    isPositive: true,
-  },
-  {
-    title: '24h Realized Profit',
-    value: '+$428.10',
-    subtitle: '42 Grid Rounds Completed',
-    change: '+3.2%',
-    isPositive: true,
-  },
-  {
-    title: 'Strategy Win Rate',
-    value: '94.2%',
-    subtitle: '156 Total Rounds Completed',
-    change: '147 Win / 9 Loss',
-    isPositive: true,
-  },
-];
+// DASHBOARD_METRICS replaced by live API data — see portfolioSummary state below
 
 // ---------------------------------------------------------------------------
 // Helper: format large volume numbers
@@ -121,11 +92,81 @@ function scoreColor(score: number): string {
   return 'text-zinc-400';
 }
 
+// ---------------------------------------------------------------------------
+// Helpers — format portfolio summary into metric card shape
+// ---------------------------------------------------------------------------
+function buildMetrics(s: PortfolioSummary) {
+  const pairsLabel =
+    s.activeStrategyPairs && s.activeStrategyPairs.length > 0
+      ? s.activeStrategyPairs.join(', ')
+      : 'No active pairs';
+  const winCount = Math.round((s.winRate / 100) * s.totalRoundsCompleted);
+  const lossCount = s.totalRoundsCompleted - winCount;
+  const pnlSign = s.realizedPnl24hUsdt >= 0 ? '+' : '';
+
+  return [
+    {
+      title: 'Total Portfolio Capital',
+      value: `$${s.totalCapitalUsdt.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+      subtitle: 'Capital in active strategies (USDT)',
+      change: s.activeStrategies > 0 ? 'LIVE' : 'IDLE',
+      isPositive: s.activeStrategies > 0,
+    },
+    {
+      title: 'Active Grid Strategies',
+      value: `${s.activeStrategies} ${s.activeStrategies === 1 ? 'Strategy' : 'Strategies'}`,
+      subtitle: pairsLabel,
+      change: s.activeStrategies > 0 ? 'RUNNING' : 'NONE',
+      isPositive: s.activeStrategies > 0,
+    },
+    {
+      title: '24h Realized Profit',
+      value: `${pnlSign}$${Math.abs(s.realizedPnl24hUsdt).toFixed(2)}`,
+      subtitle: `${s.totalRoundsCompleted} Total Rounds Completed`,
+      change: `${pnlSign}${s.totalRoundsCompleted > 0 ? ((s.realizedPnl24hUsdt / (s.totalCapitalUsdt || 1)) * 100).toFixed(2) : '0.00'}%`,
+      isPositive: s.realizedPnl24hUsdt >= 0,
+    },
+    {
+      title: 'Strategy Win Rate',
+      value: `${s.winRate.toFixed(1)}%`,
+      subtitle: `${s.totalRoundsCompleted} Total Rounds Completed`,
+      change: `${winCount} Win / ${lossCount} Loss`,
+      isPositive: s.winRate >= 50,
+    },
+  ];
+}
+
 export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateToStrategy }) => {
   const [pairs, setPairs] = useState<PairRecommendation[]>(FALLBACK_PAIRS);
   const [isLoading, setIsLoading] = useState(true);
   const [isLive, setIsLive] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+
+  // ---- Portfolio Summary state ----
+  const [portfolioSummary, setPortfolioSummary] = useState<PortfolioSummary | null>(null);
+  const [isPortfolioLoading, setIsPortfolioLoading] = useState(true);
+
+  const fetchPortfolioSummary = useCallback(async () => {
+    setIsPortfolioLoading(true);
+    const result = await getPortfolioSummary();
+    setPortfolioSummary(result);
+    setIsPortfolioLoading(false);
+  }, []);
+
+  useEffect(() => {
+    void fetchPortfolioSummary();
+  }, [fetchPortfolioSummary]);
+
+  // Auto-refresh portfolio every 60 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      void fetchPortfolioSummary();
+    }, 60 * 1000);
+    return () => clearInterval(interval);
+  }, [fetchPortfolioSummary]);
+
+  // Derived metric cards (empty array while loading)
+  const dashboardMetrics = portfolioSummary ? buildMetrics(portfolioSummary) : [];
 
   const fetchPairs = useCallback(async () => {
     setIsLoading(true);
@@ -194,23 +235,61 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateToStrate
 
       {/* Top 4 Metrics */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        {DASHBOARD_METRICS.map((m, idx) => (
-          <div
-            key={idx}
-            className="p-5 rounded-2xl bg-pitch-card border border-pitch-border hover:border-pitch-borderLight transition-all group"
-          >
-            <div className="flex items-center justify-between text-xs font-medium text-zinc-400 mb-3">
-              <span>{m.title}</span>
-              <span className="px-2 py-0.5 rounded bg-emerald-profit/15 text-emerald-profit font-semibold">
-                {m.change}
-              </span>
-            </div>
-            <div className="text-2xl font-black text-white font-mono tracking-tight mb-1 group-hover:text-electric-blue transition-colors">
-              {m.value}
-            </div>
-            <div className="text-[11px] text-zinc-500 font-medium">{m.subtitle}</div>
-          </div>
-        ))}
+        {isPortfolioLoading
+          ? // Skeleton cards while loading
+            Array.from({ length: 4 }).map((_, idx) => (
+              <div
+                key={idx}
+                className="p-5 rounded-2xl bg-pitch-card border border-pitch-border animate-pulse"
+              >
+                <div className="flex items-center justify-between mb-3">
+                  <div className="h-3 w-28 rounded bg-pitch-surface" />
+                  <div className="h-4 w-14 rounded bg-pitch-surface" />
+                </div>
+                <div className="h-7 w-32 rounded bg-pitch-surface mb-2" />
+                <div className="h-3 w-40 rounded bg-pitch-surface" />
+              </div>
+            ))
+          : dashboardMetrics.length > 0
+            ? dashboardMetrics.map((m, idx) => (
+                <div
+                  key={idx}
+                  className="p-5 rounded-2xl bg-pitch-card border border-pitch-border hover:border-pitch-borderLight transition-all group"
+                >
+                  <div className="flex items-center justify-between text-xs font-medium text-zinc-400 mb-3">
+                    <span>{m.title}</span>
+                    <span
+                      className={`px-2 py-0.5 rounded font-semibold ${
+                        m.isPositive
+                          ? 'bg-emerald-profit/15 text-emerald-profit'
+                          : 'bg-red-500/15 text-red-400'
+                      }`}
+                    >
+                      {m.change}
+                    </span>
+                  </div>
+                  <div className="text-2xl font-black text-white font-mono tracking-tight mb-1 group-hover:text-electric-blue transition-colors">
+                    {m.value}
+                  </div>
+                  <div className="text-[11px] text-zinc-500 font-medium">{m.subtitle}</div>
+                </div>
+              ))
+            : // API offline — show placeholder cards
+              [
+                'Total Portfolio Capital',
+                'Active Grid Strategies',
+                '24h Realized Profit',
+                'Strategy Win Rate',
+              ].map((title, idx) => (
+                <div
+                  key={idx}
+                  className="p-5 rounded-2xl bg-pitch-card border border-pitch-border border-dashed opacity-60"
+                >
+                  <div className="text-xs font-medium text-zinc-400 mb-3">{title}</div>
+                  <div className="text-2xl font-black text-zinc-600 font-mono tracking-tight mb-1">--</div>
+                  <div className="text-[11px] text-zinc-600">API unavailable</div>
+                </div>
+              ))}
       </div>
 
       {/* Main Grid: AI Recommendations + Live Grid Monitor */}
@@ -345,7 +424,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateToStrate
             <div className="flex items-center justify-between text-xs">
               <span className="font-mono text-zinc-300">Live Price via Binance WS</span>
               <span className="text-emerald-profit font-semibold flex items-center gap-1">
-                <CheckCircle2 className="w-3.5 h-3.5" /> 18 Grid Levels Active
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                {portfolioSummary
+                  ? `${portfolioSummary.activeStrategies} Active ${portfolioSummary.activeStrategies === 1 ? 'Strategy' : 'Strategies'}`
+                  : 'Loading...'}
               </span>
             </div>
 
@@ -389,12 +471,32 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateToStrate
             {/* Strategy Stats Box */}
             <div className="grid grid-cols-2 gap-2 text-xs">
               <div className="p-3 rounded-xl bg-pitch-surface border border-pitch-border">
-                <div className="text-zinc-500 font-medium">Realized PnL</div>
-                <div className="text-sm font-bold text-emerald-profit font-mono">+$248.50</div>
+                <div className="text-zinc-500 font-medium">24h Realized PnL</div>
+                {isPortfolioLoading ? (
+                  <div className="h-4 w-20 rounded bg-pitch-card animate-pulse mt-1" />
+                ) : (
+                  <div
+                    className={`text-sm font-bold font-mono ${
+                      (portfolioSummary?.realizedPnl24hUsdt ?? 0) >= 0
+                        ? 'text-emerald-profit'
+                        : 'text-red-400'
+                    }`}
+                  >
+                    {portfolioSummary
+                      ? `${portfolioSummary.realizedPnl24hUsdt >= 0 ? '+' : ''}$${Math.abs(portfolioSummary.realizedPnl24hUsdt).toFixed(2)}`
+                      : '--'}
+                  </div>
+                )}
               </div>
               <div className="p-3 rounded-xl bg-pitch-surface border border-pitch-border">
-                <div className="text-zinc-500 font-medium">Unrealized PnL</div>
-                <div className="text-sm font-bold text-zinc-300 font-mono">+$14.20</div>
+                <div className="text-zinc-500 font-medium">Win Rate</div>
+                {isPortfolioLoading ? (
+                  <div className="h-4 w-16 rounded bg-pitch-card animate-pulse mt-1" />
+                ) : (
+                  <div className="text-sm font-bold text-zinc-300 font-mono">
+                    {portfolioSummary ? `${portfolioSummary.winRate.toFixed(1)}%` : '--'}
+                  </div>
+                )}
               </div>
             </div>
 
