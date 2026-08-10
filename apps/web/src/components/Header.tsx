@@ -18,6 +18,8 @@ interface HeaderProps {
   realtimeStatus?: 'connecting' | 'connected' | 'disconnected';
   user?: AuthUser | null;
   onLogout?: () => void;
+  /** Live total capital across all active strategies (USDT). null = still loading. */
+  totalCapital?: number | null;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -27,6 +29,7 @@ export const Header: React.FC<HeaderProps> = ({
   realtimeStatus = 'disconnected',
   user,
   onLogout,
+  totalCapital,
 }) => {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
@@ -114,7 +117,15 @@ export const Header: React.FC<HeaderProps> = ({
               Total Capital
             </div>
             <div className="text-sm font-extrabold text-white leading-tight font-mono">
-              $45,280.50 <span className="text-[11px] text-zinc-500 font-normal">USDT</span>
+              {totalCapital === null || totalCapital === undefined ? (
+                // Skeleton while loading
+                <span className="inline-block h-3.5 w-24 rounded bg-pitch-card animate-pulse align-middle" />
+              ) : (
+                <>
+                  ${totalCapital.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}{' '}
+                  <span className="text-[11px] text-zinc-500 font-normal">USDT</span>
+                </>
+              )}
             </div>
           </div>
         </div>

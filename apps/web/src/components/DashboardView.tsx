@@ -414,97 +414,116 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateToStrate
               </div>
               <div>
                 <h3 className="text-lg font-extrabold text-white">Live Grid Monitor</h3>
-                <p className="text-xs text-zinc-400">BTC/USDT 3-Section Grid</p>
+                <p className="text-xs text-zinc-400">
+                  {portfolioSummary && portfolioSummary.activeStrategyPairs.length > 0
+                    ? portfolioSummary.activeStrategyPairs.join(', ')
+                    : 'No active strategies'}
+                </p>
               </div>
             </div>
           </div>
 
           {/* Chart Preview Container */}
           <div className="p-5 rounded-2xl bg-pitch-card border border-pitch-border space-y-4">
-            <div className="flex items-center justify-between text-xs">
-              <span className="font-mono text-zinc-300">Live Price via Binance WS</span>
-              <span className="text-emerald-profit font-semibold flex items-center gap-1">
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                {portfolioSummary
-                  ? `${portfolioSummary.activeStrategies} Active ${portfolioSummary.activeStrategies === 1 ? 'Strategy' : 'Strategies'}`
-                  : 'Loading...'}
-              </span>
-            </div>
 
-            {/* Grid Visualizer */}
-            <div className="h-64 rounded-xl bg-pitch-bg border border-pitch-border p-4 relative flex flex-col justify-between overflow-hidden">
-              <div className="text-[10px] font-mono text-zinc-600">Section 1 (Upper TP Lines)</div>
-
-              <div className="space-y-2 z-10">
-                <div className="w-full h-px bg-neon-purple/50 border-t border-dashed border-neon-purple flex items-center justify-end">
-                  <span className="text-[9px] font-mono text-neon-purple bg-pitch-bg px-1">
-                    TP #3: $98,200
-                  </span>
+            {isPortfolioLoading ? (
+              /* Loading skeleton */
+              <div className="space-y-3 animate-pulse">
+                <div className="flex items-center justify-between">
+                  <div className="h-3 w-32 rounded bg-pitch-surface" />
+                  <div className="h-3 w-20 rounded bg-pitch-surface" />
                 </div>
-                <div className="w-full h-px bg-neon-purple/50 border-t border-dashed border-neon-purple flex items-center justify-end">
-                  <span className="text-[9px] font-mono text-neon-purple bg-pitch-bg px-1">
-                    TP #2: $97,500
-                  </span>
-                </div>
-                <div className="w-full h-px bg-electric-blue border-t border-electric-blue flex items-center justify-end">
-                  <span className="text-[9px] font-mono text-electric-blue bg-pitch-bg px-1 animate-pulse">
-                    LIVE PRICE ◉
-                  </span>
-                </div>
-                <div className="w-full h-px bg-emerald-profit/50 border-t border-dashed border-emerald-profit flex items-center justify-end">
-                  <span className="text-[9px] font-mono text-emerald-profit bg-pitch-bg px-1">
-                    BUY #1: $95,200
-                  </span>
-                </div>
-                <div className="w-full h-px bg-emerald-profit/50 border-t border-dashed border-emerald-profit flex items-center justify-end">
-                  <span className="text-[9px] font-mono text-emerald-profit bg-pitch-bg px-1">
-                    BUY #2: $94,100
-                  </span>
+                <div className="h-64 rounded-xl bg-pitch-surface" />
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="h-12 rounded-xl bg-pitch-surface" />
+                  <div className="h-12 rounded-xl bg-pitch-surface" />
                 </div>
               </div>
+            ) : portfolioSummary && portfolioSummary.activeStrategies > 0 ? (
+              /* Active strategies — show live grid */
+              <>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-mono text-zinc-300">Live Price via Binance WS</span>
+                  <span className="text-emerald-profit font-semibold flex items-center gap-1">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    {portfolioSummary.activeStrategies} Active {portfolioSummary.activeStrategies === 1 ? 'Strategy' : 'Strategies'}
+                  </span>
+                </div>
 
-              <div className="text-[10px] font-mono text-zinc-600">
-                Section Gap 2.0% → Section 2
-              </div>
-            </div>
+                {/* Grid Visualizer */}
+                <div className="h-64 rounded-xl bg-pitch-bg border border-pitch-border p-4 relative flex flex-col justify-between overflow-hidden">
+                  <div className="text-[10px] font-mono text-zinc-600">Section 1 (Upper TP Lines)</div>
 
-            {/* Strategy Stats Box */}
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              <div className="p-3 rounded-xl bg-pitch-surface border border-pitch-border">
-                <div className="text-zinc-500 font-medium">24h Realized PnL</div>
-                {isPortfolioLoading ? (
-                  <div className="h-4 w-20 rounded bg-pitch-card animate-pulse mt-1" />
-                ) : (
-                  <div
-                    className={`text-sm font-bold font-mono ${
-                      (portfolioSummary?.realizedPnl24hUsdt ?? 0) >= 0
-                        ? 'text-emerald-profit'
-                        : 'text-red-400'
-                    }`}
-                  >
-                    {portfolioSummary
-                      ? `${portfolioSummary.realizedPnl24hUsdt >= 0 ? '+' : ''}$${Math.abs(portfolioSummary.realizedPnl24hUsdt).toFixed(2)}`
-                      : '--'}
+                  <div className="space-y-2 z-10">
+                    <div className="w-full h-px bg-neon-purple/50 border-t border-dashed border-neon-purple flex items-center justify-end">
+                      <span className="text-[9px] font-mono text-neon-purple bg-pitch-bg px-1">TP #3</span>
+                    </div>
+                    <div className="w-full h-px bg-neon-purple/50 border-t border-dashed border-neon-purple flex items-center justify-end">
+                      <span className="text-[9px] font-mono text-neon-purple bg-pitch-bg px-1">TP #2</span>
+                    </div>
+                    <div className="w-full h-px bg-electric-blue border-t border-electric-blue flex items-center justify-end">
+                      <span className="text-[9px] font-mono text-electric-blue bg-pitch-bg px-1 animate-pulse">
+                        LIVE PRICE ◉
+                      </span>
+                    </div>
+                    <div className="w-full h-px bg-emerald-profit/50 border-t border-dashed border-emerald-profit flex items-center justify-end">
+                      <span className="text-[9px] font-mono text-emerald-profit bg-pitch-bg px-1">BUY #1</span>
+                    </div>
+                    <div className="w-full h-px bg-emerald-profit/50 border-t border-dashed border-emerald-profit flex items-center justify-end">
+                      <span className="text-[9px] font-mono text-emerald-profit bg-pitch-bg px-1">BUY #2</span>
+                    </div>
                   </div>
-                )}
-              </div>
-              <div className="p-3 rounded-xl bg-pitch-surface border border-pitch-border">
-                <div className="text-zinc-500 font-medium">Win Rate</div>
-                {isPortfolioLoading ? (
-                  <div className="h-4 w-16 rounded bg-pitch-card animate-pulse mt-1" />
-                ) : (
-                  <div className="text-sm font-bold text-zinc-300 font-mono">
-                    {portfolioSummary ? `${portfolioSummary.winRate.toFixed(1)}%` : '--'}
-                  </div>
-                )}
-              </div>
-            </div>
 
-            {/* Binance WS Status */}
-            <div className="flex items-center gap-2 text-[10px] text-zinc-500 pt-1">
-              <div className="w-1.5 h-1.5 rounded-full bg-emerald-profit animate-pulse"></div>
-              Binance WebSocket Worker monitoring live grid levels
-            </div>
+                  <div className="text-[10px] font-mono text-zinc-600">Section Gap → Section 2</div>
+                </div>
+
+                {/* Strategy Stats Box */}
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div className="p-3 rounded-xl bg-pitch-surface border border-pitch-border">
+                    <div className="text-zinc-500 font-medium">24h Realized PnL</div>
+                    <div
+                      className={`text-sm font-bold font-mono ${
+                        portfolioSummary.realizedPnl24hUsdt >= 0 ? 'text-emerald-profit' : 'text-red-400'
+                      }`}
+                    >
+                      {portfolioSummary.realizedPnl24hUsdt >= 0 ? '+' : ''}${Math.abs(portfolioSummary.realizedPnl24hUsdt).toFixed(2)}
+                    </div>
+                  </div>
+                  <div className="p-3 rounded-xl bg-pitch-surface border border-pitch-border">
+                    <div className="text-zinc-500 font-medium">Win Rate</div>
+                    <div className="text-sm font-bold text-zinc-300 font-mono">
+                      {portfolioSummary.winRate.toFixed(1)}%
+                    </div>
+                  </div>
+                </div>
+
+                {/* Binance WS Status */}
+                <div className="flex items-center gap-2 text-[10px] text-zinc-500 pt-1">
+                  <div className="w-1.5 h-1.5 rounded-full bg-emerald-profit animate-pulse"></div>
+                  Binance WebSocket Worker monitoring live grid levels
+                </div>
+              </>
+            ) : (
+              /* Empty state — no active strategies */
+              <div className="flex flex-col items-center justify-center py-12 text-center gap-4">
+                <div className="w-16 h-16 rounded-2xl bg-pitch-surface border border-pitch-border flex items-center justify-center">
+                  <Layers className="w-7 h-7 text-zinc-600" />
+                </div>
+                <div className="space-y-1.5">
+                  <p className="text-sm font-semibold text-zinc-300">No Active Strategies</p>
+                  <p className="text-[11px] text-zinc-500 max-w-[200px] leading-relaxed">
+                    Build a grid strategy to start monitoring live price vs. grid levels here.
+                  </p>
+                </div>
+                <button
+                  onClick={() => onNavigateToStrategy()}
+                  className="px-4 py-2 rounded-xl bg-electric-blue/10 hover:bg-electric-blue hover:text-white text-electric-blue border border-electric-blue/30 font-bold text-xs transition-all flex items-center gap-1.5"
+                >
+                  <ChevronRight className="w-3.5 h-3.5" />
+                  Build First Strategy
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>

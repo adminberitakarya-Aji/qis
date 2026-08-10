@@ -15,6 +15,7 @@ import { LandingPage } from '@/components/LandingPage';
 import { realtimeClient } from '@/lib/realtime';
 import type { User } from '@/lib/auth';
 import { getStoredUser, clearAuth, logout, refreshTokens } from '@/lib/auth';
+import { getPortfolioSummary } from '@/lib/api';
 
 const PAGE_TITLES: Record<NavTab, string> = {
   dashboard: 'Dashboard',
@@ -35,6 +36,7 @@ export default function Home() {
   const [selectedExchange, setSelectedExchange] = useState<'binance' | 'bybit'>('binance');
   const [strategyPair, setStrategyPair] = useState<string | undefined>(undefined);
   const [realtimeStatus, setRealtimeStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
+  const [portfolioCapital, setPortfolioCapital] = useState<number | null>(null);
 
   // Check authentication state on mount
   useEffect(() => {
@@ -53,6 +55,18 @@ export default function Home() {
       setCheckingAuth(false);
     }
   }, []);
+
+  // Fetch real portfolio capital for the header badge
+  useEffect(() => {
+    if (!authenticated) return;
+    const fetchCapital = async () => {
+      const summary = await getPortfolioSummary();
+      if (summary) setPortfolioCapital(summary.totalCapitalUsdt);
+    };
+    void fetchCapital();
+    const interval = setInterval(() => { void fetchCapital(); }, 60_000);
+    return () => clearInterval(interval);
+  }, [authenticated]);
 
   // Connect to WebSocket when authenticated and listen for real-time events
   // Per Real-Time Data Rules (BUSINESS_RULES_ADDENDUM.md), order status,
@@ -181,6 +195,7 @@ export default function Home() {
           realtimeStatus={realtimeStatus}
           user={user}
           onLogout={() => void handleLogout()}
+          totalCapital={portfolioCapital}
         />
 
         {/* Scrollable Page Content */}
