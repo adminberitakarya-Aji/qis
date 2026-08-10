@@ -108,7 +108,7 @@ TIMEOUT_SECS   = 15
 # Cached in-process since these filter values change rarely (see Binance
 # CHANGELOG — filter updates are announced weeks in advance).
 # ─────────────────────────────────────────────────────────────────────────────
-BINANCE_BASE = "https://api.binance.com"
+BINANCE_BASE = "https://data-api.binance.vision"  # market-data-only mirror; api.binance.com's :443 is blocked from some VPS/hosting networks — this endpoint isn't
 DEFAULT_MIN_NOTIONAL = 10.0  # conservative fallback if Binance is unreachable
 _min_notional_cache: Dict[str, tuple] = {}  # symbol -> (value, fetched_at_epoch)
 MIN_NOTIONAL_CACHE_TTL_SECS = 6 * 60 * 60  # 6 hours — filters rarely change

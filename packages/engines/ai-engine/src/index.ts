@@ -10,7 +10,7 @@
 import { MarketEngine } from '@qis/market-engine';
 import { createAiProvider, type AiProvider } from '@qis/providers-ai';
 
-const BINANCE_BASE = 'https://api.binance.com';
+const BINANCE_BASE = 'https://data-api.binance.vision'; // market-data-only mirror; api.binance.com's :443 can be blocked from some hosting networks — this endpoint isn't
 const DEFAULT_MIN_NOTIONAL = 10.0; // conservative fallback if Binance is unreachable
 const MIN_NOTIONAL_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
 const minNotionalCache = new Map<string, { value: number; fetchedAt: number }>();
