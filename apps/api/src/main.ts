@@ -21,6 +21,15 @@ async function bootstrap() {
   // frontend's native WebSocket client — causing connection failures.
   app.useWebSocketAdapter(new WsAdapter(app));
 
+  // TEMPORARY DIAGNOSTIC — remove after confirming WS handshake works.
+  // Logs every raw HTTP 'upgrade' event the underlying Node server receives,
+  // so we can see whether Nest's WsAdapter listener is even firing and what
+  // pathname it computes, before deciding it doesn't match the gateway path.
+  const rawHttpServer = app.getHttpServer();
+  rawHttpServer.on('upgrade', (req: any) => {
+    logger.info('[DEBUG] raw upgrade event received', { url: req.url, headers: req.headers });
+  });
+
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
