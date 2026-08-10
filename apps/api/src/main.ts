@@ -1,5 +1,6 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
+import { WsAdapter } from '@nestjs/platform-ws';
 import { AppModule } from './app.module';
 import { createServiceLogger } from '@qis/logger';
 
@@ -13,6 +14,12 @@ async function bootstrap() {
     origin: process.env.CORS_ORIGIN?.split(',') ?? ['http://localhost:3000'],
     credentials: true,
   });
+
+  // RealtimeGateway is written against the raw 'ws' library (Server/WebSocket
+  // from 'ws', client.readyState checks). Without this, Nest defaults to the
+  // Socket.io adapter, which speaks a different handshake protocol than the
+  // frontend's native WebSocket client — causing connection failures.
+  app.useWebSocketAdapter(new WsAdapter(app));
 
   app.useGlobalPipes(
     new ValidationPipe({
