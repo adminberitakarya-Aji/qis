@@ -134,7 +134,8 @@ def generate_strategy_recommendation(
     symbol: str,
     features: Dict[str, Any],
     section_count: int,
-    capital: float
+    capital: float,
+    min_notional: float = 10.0,
 ) -> Dict[str, Any]:
     """
     Precision AI Parameter Optimizer:
@@ -145,6 +146,16 @@ def generate_strategy_recommendation(
     1. Low Volatility (<3%): Tighter Grid Distance (0.4% - 0.6%), higher grid density, tighter Section Gaps (1.5%) to maximize fill frequency.
     2. Medium Volatility (3% - 6%): Balanced Grid Distance (0.6% - 1.0%), moderate gaps (2.0%).
     3. High Volatility (>6%): Wider Grid Distance (1.2% - 2.0%), wider Section Gaps (3.0% - 4.0%) to prevent rapid capital exhaustion on deep pullbacks.
+
+    Capital-Aware Grid Sizing:
+    Grid density is capped so that every grid order's allocated capital stays
+    comfortably above the exchange's minimum order notional (see get_min_notional
+    in main.py). Without this, a small account (e.g. $100) could be handed a
+    grid count sized for a large account, producing per-order sizes that would
+    be rejected by the exchange (Binance NOTIONAL/MIN_NOTIONAL filter) — a
+    strategy that looks great in Paper Trading but can't actually execute live.
+    A SAFETY_MARGIN above the raw exchange minimum absorbs price movement
+    between blueprint calculation and actual fill.
     """
     atr = features.get("atr_percent", 2.0)
     volatility = features.get("volatility_24h_percent", 4.0)
@@ -167,6 +178,21 @@ def generate_strategy_recommendation(
         base_grid_distance = max(0.65, round(raw_base_distance, 2))
         vol_regime = "Balanced Volatility (Standard Grid)"
 
+    # Default capital allocation per section — MUST stay in sync with
+    # packages/engines/strategy-engine/src/index.ts's `allocations` defaults,
+    # since that's what actually splits `capital` across sections at execution
+    # time. If those defaults change, update DEFAULT_ALLOCATIONS to match.
+    DEFAULT_ALLOCATIONS = {1: [100.0], 2: [50.0, 50.0], 3: [35.0, 35.0, 30.0]}
+    allocations = DEFAULT_ALLOCATIONS.get(section_count) or [
+        round(100.0 / section_count, 2) for _ in range(section_count)
+    ]
+
+    SAFETY_MARGIN = 1.5  # require capitalPerOrder >= min_notional * this
+    MIN_VIABLE_GRIDS_PER_SECTION = 2  # below this, a section isn't a meaningful grid
+
+    capital_constrained = False
+    underfunded_sections: List[int] = []
+
     sections = []
     for i in range(section_count):
         # Section Risk Escalation Factor
@@ -176,18 +202,45 @@ def generate_strategy_recommendation(
         section_gap = round(1.5 + (volatility * 0.25) + (i * 1.2), 2)
         min_net_profit = round(0.50 + (i * 0.35) + (atr * 0.05), 2)
         
-        # Grid density scaling
+        # Grid density scaling — this is the "ideal" density for the volatility
+        # regime, before capital constraints are applied below.
         if volatility < 3.0:
-            grid_count = 12 if i == 0 else (9 if i == 1 else 6)
+            ideal_grid_count = 12 if i == 0 else (9 if i == 1 else 6)
         elif volatility > 6.0:
-            grid_count = 8 if i == 0 else (6 if i == 1 else 4)
+            ideal_grid_count = 8 if i == 0 else (6 if i == 1 else 4)
         else:
-            grid_count = 10 if i == 0 else (7 if i == 1 else 5)
+            ideal_grid_count = 10 if i == 0 else (7 if i == 1 else 5)
 
-        sec_reasoning = (
-            f"Section {i + 1} ({vol_regime}): Optimized with {grid_count} grids at {grid_distance}% distance "
-            f"and {section_gap}% Section Gap based on ATR ({atr}%). Net profit threshold set to {min_net_profit}%."
-        )
+        # Capital-aware cap: how many grids can this section actually fund
+        # while keeping each order's notional safely above the exchange minimum?
+        section_capital = capital * (allocations[i] / 100.0)
+        max_viable_grids = int(section_capital // (min_notional * SAFETY_MARGIN))
+
+        if max_viable_grids >= ideal_grid_count:
+            grid_count = ideal_grid_count
+        elif max_viable_grids >= MIN_VIABLE_GRIDS_PER_SECTION:
+            grid_count = max_viable_grids
+            capital_constrained = True
+        else:
+            # Even the minimum viable grid count can't be safely funded.
+            grid_count = MIN_VIABLE_GRIDS_PER_SECTION
+            capital_constrained = True
+            underfunded_sections.append(i + 1)
+
+        capital_per_order = round(section_capital / grid_count, 2) if grid_count else 0.0
+
+        if grid_count < ideal_grid_count:
+            sec_reasoning = (
+                f"Section {i + 1} ({vol_regime}): grid count reduced from {ideal_grid_count} to {grid_count} "
+                f"to keep each order (~${capital_per_order}) safely above the exchange's minimum order size "
+                f"(${min_notional} x {SAFETY_MARGIN} safety margin). Distance {grid_distance}%, "
+                f"Section Gap {section_gap}%, Net profit threshold {min_net_profit}%."
+            )
+        else:
+            sec_reasoning = (
+                f"Section {i + 1} ({vol_regime}): Optimized with {grid_count} grids at {grid_distance}% distance "
+                f"and {section_gap}% Section Gap based on ATR ({atr}%). Net profit threshold set to {min_net_profit}%."
+            )
 
         sections.append({
             "sectionIndex": i,
@@ -198,11 +251,25 @@ def generate_strategy_recommendation(
             "reasoning": sec_reasoning,
         })
 
-    overall_reasoning = (
-        f"AI Strategy Blueprint for {symbol} dynamically optimized for {vol_regime}. "
-        f"Base Grid Distance derived from ATR ({atr}%) and 24h Volatility ({volatility}%). "
-        f"Configured across {section_count} sections with dynamic Section Gaps to maximize compound grid recycling while shielding capital."
-    )
+    if underfunded_sections:
+        overall_reasoning = (
+            f"AI Strategy Blueprint for {symbol}: with ${capital} capital, section(s) "
+            f"{', '.join(str(s) for s in underfunded_sections)} could not be funded to a safe grid density "
+            f"given this pair's minimum order size (${min_notional}). Consider increasing capital or reducing "
+            f"section count for a fully reliable strategy."
+        )
+    elif capital_constrained:
+        overall_reasoning = (
+            f"AI Strategy Blueprint for {symbol} dynamically optimized for {vol_regime}, then scaled down to fit "
+            f"your ${capital} capital — every grid order is sized to clear the exchange's minimum order size "
+            f"with a {SAFETY_MARGIN}x safety margin, so the strategy is fully executable, not just on paper."
+        )
+    else:
+        overall_reasoning = (
+            f"AI Strategy Blueprint for {symbol} dynamically optimized for {vol_regime}. "
+            f"Base Grid Distance derived from ATR ({atr}%) and 24h Volatility ({volatility}%). "
+            f"Configured across {section_count} sections with dynamic Section Gaps to maximize compound grid recycling while shielding capital."
+        )
 
     # Capital Protection: AI-calculated dynamic values (not hardcoded)
     # Note: current_price is not available at this level; the AI service provides
@@ -224,4 +291,8 @@ def generate_strategy_recommendation(
         "capitalProtectionFloorPrice": capital_protection_floor_price,
         "maxCapitalPerMovementPercent": max_capital_per_movement,
         "maxDrawdownAlertPercent": max_drawdown_alert,
+        "minNotionalUsdt": min_notional,
+        "capitalConstrained": capital_constrained,
+        "underfundedSections": underfunded_sections,
     }
+    

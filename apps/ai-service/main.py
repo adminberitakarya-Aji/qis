@@ -99,6 +99,74 @@ TIMEOUT_SECS   = 15
 # Polite delay between requests to respect CoinGecko free-tier rate limit
 CG_REQUEST_DELAY = 1.2  # seconds
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Binance exchangeInfo — used only to read the NOTIONAL/MIN_NOTIONAL filter per
+# symbol so the AI Strategy Planner can size grids that are actually
+# executable. This is a public, unauthenticated endpoint (no API key needed).
+# Cached in-process since these filter values change rarely (see Binance
+# CHANGELOG — filter updates are announced weeks in advance).
+# ─────────────────────────────────────────────────────────────────────────────
+BINANCE_BASE = "https://api.binance.com"
+DEFAULT_MIN_NOTIONAL = 10.0  # conservative fallback if Binance is unreachable
+_min_notional_cache: Dict[str, tuple] = {}  # symbol -> (value, fetched_at_epoch)
+MIN_NOTIONAL_CACHE_TTL_SECS = 6 * 60 * 60  # 6 hours — filters rarely change
+
+
+def _to_binance_symbol(pair: str) -> str:
+    """'BTC/USDT' -> 'BTCUSDT'"""
+    return pair.replace("/", "").upper()
+
+
+def get_min_notional(pair: str) -> float:
+    """
+    Returns the minimum order notional (price * quantity, in USDT) Binance
+    will accept for this symbol. Checks both the modern `NOTIONAL` filter
+    and the legacy `MIN_NOTIONAL` filter (older symbols may still expose the
+    legacy one). Falls back to DEFAULT_MIN_NOTIONAL if the symbol or filter
+    can't be resolved, so a transient Binance/network issue degrades to a
+    safe conservative default rather than letting grids size below the real
+    minimum.
+    """
+    symbol = _to_binance_symbol(pair)
+
+    cached = _min_notional_cache.get(symbol)
+    if cached and (time.time() - cached[1]) < MIN_NOTIONAL_CACHE_TTL_SECS:
+        return cached[0]
+
+    try:
+        resp = requests.get(
+            f"{BINANCE_BASE}/api/v3/exchangeInfo",
+            params={"symbol": symbol},
+            timeout=TIMEOUT_SECS,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        symbols = data.get("symbols", [])
+        if not symbols:
+            log_warn("Symbol not found on Binance exchangeInfo", symbol=symbol)
+            return DEFAULT_MIN_NOTIONAL
+
+        filters = symbols[0].get("filters", [])
+        min_notional = None
+        for f in filters:
+            if f.get("filterType") == "NOTIONAL":
+                min_notional = float(f.get("minNotional", DEFAULT_MIN_NOTIONAL))
+                break
+            if f.get("filterType") == "MIN_NOTIONAL":
+                min_notional = float(f.get("minNotional", DEFAULT_MIN_NOTIONAL))
+                break
+
+        if min_notional is None:
+            log_warn("No NOTIONAL/MIN_NOTIONAL filter found", symbol=symbol)
+            min_notional = DEFAULT_MIN_NOTIONAL
+
+        _min_notional_cache[symbol] = (min_notional, time.time())
+        return min_notional
+
+    except Exception as e:
+        log_warn(f"Failed to fetch min notional for {symbol}", error=str(e))
+        return DEFAULT_MIN_NOTIONAL
+
 
 def _cg_get(path: str, params: dict = {}) -> dict | list:
     """Thin wrapper around CoinGecko REST calls with error handling."""
@@ -315,12 +383,14 @@ def analyze_strategy(req: StrategyAnalysisRequest):
         candles = []
 
     features = calculate_technical_features(candles)
+    min_notional = get_min_notional(req.symbol)
 
     return generate_strategy_recommendation(
         symbol=req.symbol,
         features=features,
         section_count=req.sectionCount,
         capital=req.capital,
+        min_notional=min_notional,
     )
 
 
