@@ -12,6 +12,10 @@ export interface ApiResponse<T> {
   statusCode?: number;
 }
 
+// ============================================================
+// Shared / AI Types
+// ============================================================
+
 export interface PairRecommendation {
   rank: number;
   pair: string;
@@ -37,6 +41,95 @@ export interface PortfolioSummary {
   totalRoundsCompleted: number;
   winRate: number;
 }
+
+// ============================================================
+// Execution / Trading Grid Types
+// ============================================================
+
+export interface GridOrder {
+  id: string;
+  clientOrderId: string;
+  gridStrategyId: string;
+  sectionIndex: number;
+  globalIndex: number;
+  gridPrice: number;
+  tpPrice: number;
+  allocatedCapital: number;
+  estimatedQuantity: number;
+  status:
+    | 'pending'
+    | 'buy_placed'
+    | 'buy_filled'
+    | 'tp_placed'
+    | 'tp_filled'
+    | 'cancelled'
+    | 'error';
+  buyFilledPrice: number | null;
+  buyFilledQuantity: number | null;
+  tpFilledPrice: number | null;
+  realizedPnl: number | null;
+  buyFee: number | null;
+  tpFee: number | null;
+  slippagePercent: number | null;
+  filledAt: string | null;
+  tpFilledAt: string | null;
+  updatedAt: string;
+}
+
+export interface ActiveStrategy {
+  id: string;
+  pair: string;
+  exchange: string;
+  capital: number;
+  status: 'active' | 'stopped' | 'paused';
+  sectionCount: number;
+  totalGridLevels: number;
+  createdAt: string;
+  updatedAt: string;
+  blueprintId: string;
+}
+
+// ============================================================
+// Analytics Types
+// ============================================================
+
+/** One month row from analytics engine's monthlyBreakdown */
+export interface MonthlyReturn {
+  month: string;           // e.g. "2026-08"
+  rounds: number;          // completed rounds that month
+  realizedPnlUsdt: number; // gross PnL
+  feesUsdt: number;        // fees paid
+  netPnlUsdt: number;      // net PnL (realizedPnl - fees)
+}
+
+/** Full analytics summary returned by GET /analytics/summary */
+export interface AnalyticsSummary {
+  totalRealizedPnlUsdt: number;
+  totalFeesUsdt: number;
+  netPnlUsdt: number;
+  winRate: number;
+  totalRounds: number;
+  activeStrategiesCount: number;
+  bestPairByPnl: string | null;
+  monthlyBreakdown: MonthlyReturn[];
+}
+
+// ============================================================
+// Strategy Build Types
+// ============================================================
+
+export interface BuildStrategyRequest {
+  exchange: 'binance' | 'bybit';
+  pair: string;
+  capital: number;
+  sectionCount: 1 | 2 | 3;
+  capitalAllocationPercent: number[];
+  riskPreference?: 'conservative' | 'balanced' | 'aggressive';
+}
+
+// ============================================================
+// Core fetch utility
+// ============================================================
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T | null> {
   try {
@@ -107,17 +200,51 @@ export async function getPortfolioSummary(): Promise<PortfolioSummary | null> {
 }
 
 // ============================================================
-// Strategy Endpoints
+// Execution / Trading Grid Endpoints
 // ============================================================
 
-export interface BuildStrategyRequest {
-  exchange: 'binance' | 'bybit';
-  pair: string;
-  capital: number;
-  sectionCount: 1 | 2 | 3;
-  capitalAllocationPercent: number[];
-  riskPreference?: 'conservative' | 'balanced' | 'aggressive';
+/**
+ * GET /execution/active
+ * Returns all active grid strategies for the current user.
+ */
+export async function getActiveStrategies(): Promise<ActiveStrategy[] | null> {
+  return apiFetch<ActiveStrategy[]>('/execution/active');
 }
+
+/**
+ * GET /execution/orders/:strategyId
+ * Returns all grid orders for a given strategy, sorted by globalIndex.
+ */
+export async function getStrategyOrders(strategyId: string): Promise<GridOrder[] | null> {
+  return apiFetch<GridOrder[]>(`/execution/orders/${strategyId}`);
+}
+
+/**
+ * POST /execution/stop/:strategyId
+ * Stops a running grid strategy (cancels all open orders on exchange).
+ */
+export async function stopExecution(strategyId: string): Promise<Record<string, unknown> | null> {
+  return apiFetch<Record<string, unknown>>(`/execution/stop/${strategyId}`, {
+    method: 'POST',
+  });
+}
+
+// ============================================================
+// Analytics Endpoints
+// ============================================================
+
+/**
+ * GET /analytics/summary
+ * Returns full analytics summary for the current user:
+ * total PnL, fees, win rate, drawdown, and monthly breakdown.
+ */
+export async function getAnalyticsSummary(): Promise<AnalyticsSummary | null> {
+  return apiFetch<AnalyticsSummary>('/analytics/summary');
+}
+
+// ============================================================
+// Strategy Endpoints
+// ============================================================
 
 export async function buildStrategy(req: BuildStrategyRequest): Promise<Record<string, unknown> | null> {
   return apiFetch<Record<string, unknown>>('/strategy/build', {
