@@ -120,8 +120,15 @@ export class ExecutionService {
       );
     }
 
-    // 4. Get current market price to anchor grid levels (Market Engine, no creds needed)
-    let currentPrice = 100;
+    // 4. Get current market price to anchor grid levels (Market Engine, no creds needed).
+    //    This MUST be a real price — there is no safe fallback. Anchoring the
+    //    grid to a fake number silently builds every grid level, TP price,
+    //    and quantity off a value with no relationship to the market
+    //    (previously defaulted to 100, which meant e.g. a MATIC/USDT grid
+    //    was silently built around $99 instead of MATIC's real price the
+    //    moment fetchTicker() failed for any reason). We now fail the start
+    //    request loudly instead of starting a strategy on fabricated prices.
+    let currentPrice: number;
     try {
       // Market data uses public endpoints (no credentials), so a local
       // Engine instance is fine — no need to share the Exchange Engine here.
@@ -131,9 +138,22 @@ export class ExecutionService {
         blueprint.exchange as 'binance' | 'bybit',
         blueprint.pair,
       );
-      currentPrice = ticker.last || currentPrice;
-    } catch {
-      // fallback price — execution will use blueprint grid prices as-is
+      if (!ticker.last || ticker.last <= 0) {
+        throw new Error(`Ticker returned invalid last price: ${ticker.last}`);
+      }
+      currentPrice = ticker.last;
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      this.logger.error('Failed to fetch current market price — refusing to start strategy on a fallback price', {
+        exchange: blueprint.exchange,
+        pair: blueprint.pair,
+        error: error.message,
+      });
+      throw new BadRequestException(
+        `Could not fetch current market price for ${blueprint.pair} on ${blueprint.exchange}. ` +
+        `The strategy was not started to avoid building grid levels on a fake price. ` +
+        `This can happen if the pair was delisted or renamed on the exchange — verify the symbol and try again.`,
+      );
     }
 
     // 5. Create GridStrategy record in DB
@@ -848,7 +868,13 @@ export class ExecutionService {
     //    call and MUST happen before the DB transaction below — never
     //    inside it, since holding a transaction open across an external
     //    HTTP call risks long-lived DB locks and transaction timeouts.
-    let currentPrice = 100;
+    //
+    //    There is no safe fallback here either. Paper mode exists to give
+    //    a realistic preview of a real strategy — building it around a
+    //    fabricated $100 anchor when the ticker fetch fails defeats that
+    //    purpose (and did so silently, so this got mistaken for a real
+    //    quote in the UI). Fail the request instead.
+    let currentPrice: number;
     try {
       const { ExchangeEngine: ExchangeEngineClass } = await import('@qis/exchange-engine');
       const publicTicker = new ExchangeEngineClass();
@@ -856,9 +882,22 @@ export class ExecutionService {
         blueprint.exchange as 'binance' | 'bybit',
         blueprint.pair,
       );
-      currentPrice = ticker.last || currentPrice;
-    } catch {
-      // fallback price
+      if (!ticker.last || ticker.last <= 0) {
+        throw new Error(`Ticker returned invalid last price: ${ticker.last}`);
+      }
+      currentPrice = ticker.last;
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      this.logger.error('Failed to fetch current market price — refusing to start paper strategy on a fallback price', {
+        exchange: blueprint.exchange,
+        pair: blueprint.pair,
+        error: error.message,
+      });
+      throw new BadRequestException(
+        `Could not fetch current market price for ${blueprint.pair} on ${blueprint.exchange}. ` +
+        `The paper strategy was not started to avoid building grid levels on a fake price. ` +
+        `This can happen if the pair was delisted or renamed on the exchange — verify the symbol and try again.`,
+      );
     }
 
     // 3. Build grid from blueprint. Pure computation (no DB/network), safe
