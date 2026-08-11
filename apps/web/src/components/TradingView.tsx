@@ -154,6 +154,11 @@ export const TradingView: React.FC<TradingViewProps> = ({ tradingMode, initialEx
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [currentExchange, setCurrentExchange] = useState<'binance' | 'bybit'>(initialExchange);
 
+  // Sync when parent (Header) changes the selected exchange.
+  useEffect(() => {
+    setCurrentExchange(initialExchange);
+  }, [initialExchange]);
+
   // ------------------------------------------------------------------
   // Fetch active strategy + its orders — branched on Trading Mode.
   //
