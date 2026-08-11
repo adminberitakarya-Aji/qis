@@ -9,7 +9,7 @@ import { StartPaperExecutionDto } from './dto/start-paper-execution.dto';
 @Controller('execution')
 @UseGuards(JwtAuthGuard)
 export class ExecutionController {
-  constructor(private readonly executionService: ExecutionService) {}
+  constructor(private readonly executionService: ExecutionService) { }
 
   @Post('start')
   async startExecution(
@@ -101,6 +101,30 @@ export class ExecutionController {
       data,
     };
   }
+
+  /**
+   * GET /execution/paper/balance/:exchange
+   * Returns the CURRENT available virtual balance for a specific exchange's
+   * paper account — used by the AI Strategy Builder to lock the "Trading
+   * Capital" input while in Paper mode. Each exchange has its own $100
+   * starting balance (see PaperAccount's userId_exchange_label unique key);
+   * this is intentionally scoped per-exchange rather than summed, since a
+   * new paper strategy on this exchange can only draw from this pool.
+   * Returns 100 (the default starting balance) if the user hasn't started
+   * a paper strategy on this exchange yet — no PaperAccount row exists.
+   */
+  @Get('paper/balance/:exchange')
+  async getPaperBalance(
+    @CurrentUser() user: { id: string },
+    @Param('exchange') exchange: 'binance' | 'bybit',
+  ) {
+    const data = await this.executionService.getAvailablePaperBalance(user.id, exchange);
+    return {
+      success: true,
+      message: 'Available paper balance retrieved',
+      data,
+    };
+  }
 }
 
 // ============================================================
@@ -118,7 +142,7 @@ export class WorkerController {
   private readonly workerSecret =
     process.env.WORKER_SECRET || 'qis-internal-worker-secret-dev';
 
-  constructor(private readonly executionService: ExecutionService) {}
+  constructor(private readonly executionService: ExecutionService) { }
 
   private verifyWorkerSecret(secret: string | undefined) {
     if (secret !== this.workerSecret) {

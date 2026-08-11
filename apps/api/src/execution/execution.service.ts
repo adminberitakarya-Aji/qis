@@ -686,7 +686,7 @@ export class ExecutionService {
         await this.prisma.gridOrder.update({
           where: { id: orderId },
           data: { status: 'error' },
-        }).catch(() => {});
+        }).catch(() => { });
 
         throw new Error('Market buy failed after all retry attempts');
       }
@@ -780,7 +780,7 @@ export class ExecutionService {
       await this.prisma.gridOrder.update({
         where: { id: orderId },
         data: { status: 'error' },
-      }).catch(() => {}); // Best effort
+      }).catch(() => { }); // Best effort
 
       throw err; // Re-throw to let the caller handle it
     }
@@ -1138,6 +1138,29 @@ export class ExecutionService {
     });
 
     return result;
+  }
+
+  /**
+   * Returns the current available virtual balance for a specific exchange's
+   * paper account (see PaperAccount's userId_exchange_label unique key).
+   * Returns the $100 default if no account exists yet for this exchange —
+   * matches the amount `startPaperExecution` would create on first use,
+   * without actually creating the row (kept read-only / side-effect-free).
+   */
+  async getAvailablePaperBalance(userId: string, exchange: 'binance' | 'bybit') {
+    const PAPER_STARTING_BALANCE = 100;
+    const account = await this.prisma.paperAccount.findUnique({
+      where: {
+        userId_exchange_label: { userId, exchange, label: 'Paper Trading' },
+      },
+      select: { virtualBalance: true },
+    });
+
+    return {
+      exchange,
+      virtualBalance: account ? Number(account.virtualBalance.toFixed(2)) : PAPER_STARTING_BALANCE,
+      accountExists: !!account,
+    };
   }
 
   /**

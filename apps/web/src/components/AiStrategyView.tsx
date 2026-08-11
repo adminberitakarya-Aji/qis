@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Brain,
   Sparkles,
@@ -12,7 +12,7 @@ import {
   Sliders,
   DollarSign,
 } from 'lucide-react';
-import { buildStrategy, runSimulation, startPaperExecution } from '@/lib/api';
+import { buildStrategy, runSimulation, startPaperExecution, getPaperBalance } from '@/lib/api';
 import type { TradingMode } from '@/lib/api';
 
 interface BlueprintSection {
@@ -65,6 +65,29 @@ export const AiStrategyView: React.FC<AiStrategyViewProps> = ({
   const [capital, setCapital] = useState(10000);
   const [sectionCount, setSectionCount] = useState<1 | 2 | 3>(3);
   const [allocations, setAllocations] = useState<number[]>([35, 35, 30]);
+
+  // Paper mode: Trading Capital is locked to this exchange's current
+  // available virtual balance (each exchange has its own $100 pool — see
+  // getAvailablePaperBalance). Re-fetched whenever exchange changes.
+  const [paperBalance, setPaperBalance] = useState<number | null>(null);
+  const [isPaperBalanceLoading, setIsPaperBalanceLoading] = useState(false);
+
+  useEffect(() => {
+    if (!isPaper) return;
+    let cancelled = false;
+    setIsPaperBalanceLoading(true);
+    void getPaperBalance(exchange).then((result) => {
+      if (cancelled) return;
+      setIsPaperBalanceLoading(false);
+      if (result) {
+        setPaperBalance(result.virtualBalance);
+        setCapital(result.virtualBalance);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isPaper, exchange]);
 
   // Generated Blueprint State
   const [isBuilding, setIsBuilding] = useState(false);
@@ -262,16 +285,35 @@ export const AiStrategyView: React.FC<AiStrategyViewProps> = ({
 
           {/* Input Capital */}
           <div className="space-y-2">
-            <label className="text-xs font-semibold text-zinc-300">Trading Capital (USDT)</label>
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold text-zinc-300">Trading Capital (USDT)</label>
+              {isPaper && (
+                <span className="text-[10px] font-bold text-amber-400 uppercase tracking-wide">
+                  Locked — Paper Balance
+                </span>
+              )}
+            </div>
             <div className="relative">
               <DollarSign className="w-4 h-4 text-zinc-500 absolute left-3.5 top-3" />
               <input
                 type="number"
-                value={capital}
-                onChange={(e) => setCapital(Number(e.target.value))}
-                className="w-full pl-9 pr-4 py-2.5 rounded-xl bg-pitch-surface border border-pitch-border text-white text-sm font-mono focus:border-electric-blue outline-none"
+                value={isPaper ? paperBalance ?? 0 : capital}
+                onChange={(e) => !isPaper && setCapital(Number(e.target.value))}
+                readOnly={isPaper}
+                disabled={isPaper && isPaperBalanceLoading}
+                className={`w-full pl-9 pr-4 py-2.5 rounded-xl border text-sm font-mono outline-none ${isPaper
+                    ? 'bg-pitch-surface/50 border-amber-500/30 text-amber-300 cursor-not-allowed'
+                    : 'bg-pitch-surface border-pitch-border text-white focus:border-electric-blue'
+                  }`}
               />
             </div>
+            {isPaper && (
+              <p className="text-[11px] text-zinc-500">
+                {isPaperBalanceLoading
+                  ? 'Checking available paper balance…'
+                  : `Available on ${exchange.charAt(0).toUpperCase() + exchange.slice(1)} paper account — each exchange starts at $100.`}
+              </p>
+            )}
           </div>
 
           {/* Select Section Count */}
@@ -322,11 +364,17 @@ export const AiStrategyView: React.FC<AiStrategyViewProps> = ({
             </div>
           )}
 
+          {isPaper && paperBalance === 0 && !isPaperBalanceLoading && (
+            <div className="px-3 py-2 rounded-lg bg-red-400/10 border border-red-400/20 text-red-400 text-[10px] flex items-center gap-2">
+              <span>⚠️</span> No paper balance left on {exchange.charAt(0).toUpperCase() + exchange.slice(1)} — stop an active paper strategy to free up capital, or switch exchange.
+            </div>
+          )}
+
           {/* AI Build Button */}
           <button
             onClick={() => void handleBuildStrategy()}
-            disabled={isBuilding}
-            className="w-full py-3.5 rounded-xl bg-gradient-to-r from-electric-blue to-neon-purple text-white font-extrabold text-sm shadow-lg shadow-electric-blue/20 hover:opacity-95 transition-all flex items-center justify-center gap-2 glow-blue"
+            disabled={isBuilding || (isPaper && (isPaperBalanceLoading || paperBalance === 0))}
+            className="w-full py-3.5 rounded-xl bg-gradient-to-r from-electric-blue to-neon-purple text-white font-extrabold text-sm shadow-lg shadow-electric-blue/20 hover:opacity-95 transition-all flex items-center justify-center gap-2 glow-blue disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {isBuilding ? (
               <>

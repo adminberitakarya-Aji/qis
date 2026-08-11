@@ -282,6 +282,22 @@ export async function stopPaperExecution(strategyId: string): Promise<Record<str
   });
 }
 
+export interface PaperBalance {
+  exchange: 'binance' | 'bybit';
+  virtualBalance: number;
+  accountExists: boolean;
+}
+
+/**
+ * GET /execution/paper/balance/:exchange
+ * Available virtual balance for paper strategies on this exchange
+ * (each exchange has its own $100 starting pool). Used to lock the
+ * "Trading Capital" input in the AI Strategy Builder while in Paper mode.
+ */
+export async function getPaperBalance(exchange: 'binance' | 'bybit'): Promise<PaperBalance | null> {
+  return apiFetch<PaperBalance>(`/execution/paper/balance/${exchange}`);
+}
+
 export interface PaperStatus {
   virtualBalance: number;
   activeStrategiesCount: number;
