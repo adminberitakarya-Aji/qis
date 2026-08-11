@@ -435,6 +435,28 @@ export class ExecutionService {
     return strategy.orders;
   }
 
+  /**
+   * Returns all paper orders for a given paper strategy, sorted by
+   * globalOrderIndex ASC. Mirrors getStrategyOrders() but reads from the
+   * PaperStrategy / PaperOrder tables so the Trading Grid page can render
+   * the grid-level table when the global Trading Mode is 'paper'.
+   *
+   * Same ownership + not-found guards as getStrategyOrders — the row's
+   * userId is the only source of truth, regardless of which execution
+   * mode owns the strategy.
+   */
+  async getPaperStrategyOrders(userId: string, strategyId: string) {
+    const strategy = await this.prisma.paperStrategy.findUnique({
+      where: { id: strategyId },
+      include: { paperOrders: { orderBy: { globalOrderIndex: 'asc' } } },
+    });
+
+    if (!strategy) throw new NotFoundException('Paper strategy not found');
+    if (strategy.userId !== userId) throw new ForbiddenException('You do not own this paper strategy');
+
+    return strategy.paperOrders;
+  }
+
   // ============================================================
   // Internal Worker Methods (called by Binance WebSocket Worker)
   // ============================================================
@@ -1201,6 +1223,12 @@ export class ExecutionService {
       return {
         strategyId: s.id,
         pair: s.pair,
+        // `exchange` is required by the Trading Grid banner ("Binance Spot • N Sections").
+        // PaperAccount already has its own `exchange` field, but each PaperStrategy
+        // carries it too — always equal in practice (a paper strategy is bound to one
+        // exchange's paper account), so we surface PaperStrategy.exchange to keep the
+        // banner honest if a user ever has multi-exchange paper accounts.
+        exchange: s.exchange,
         capital: s.capital,
         status: s.status,
         startedAt: s.startedAt,

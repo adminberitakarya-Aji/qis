@@ -149,7 +149,7 @@ export default function Home() {
           />
         );
       case 'trading':
-        return <TradingView />;
+        return <TradingView tradingMode={tradingMode} />;
       case 'portfolio':
         return <PortfolioView />;
       case 'analytics':

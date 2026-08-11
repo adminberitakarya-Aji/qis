@@ -103,6 +103,25 @@ export class ExecutionController {
   }
 
   /**
+   * GET /execution/paper/orders/:id
+   * Returns all paper grid orders for a given paper strategy, sorted by
+   * globalOrderIndex ASC. Used by the Trading Grid page when the global
+   * Trading Mode is 'paper' — mirrors GET /execution/orders/:id for live.
+   */
+  @Get('paper/orders/:id')
+  async getPaperStrategyOrders(
+    @CurrentUser() user: { id: string },
+    @Param('id') strategyId: string,
+  ) {
+    const data = await this.executionService.getPaperStrategyOrders(user.id, strategyId);
+    return {
+      success: true,
+      message: 'Paper strategy orders retrieved',
+      data,
+    };
+  }
+
+  /**
    * GET /execution/paper/balance/:exchange
    * Returns the CURRENT available virtual balance for a specific exchange's
    * paper account — used by the AI Strategy Builder to lock the "Trading

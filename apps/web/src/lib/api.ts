@@ -300,10 +300,28 @@ export async function getPaperBalance(exchange: 'binance' | 'bybit'): Promise<Pa
 
 export interface PaperStatus {
   virtualBalance: number;
+  exchange: 'binance' | 'bybit';
   activeStrategiesCount: number;
   completedRounds: number;
   totalRealizedPnl: number;
-  strategies: Array<Record<string, unknown>>;
+  strategies: PaperStrategySummary[];
+}
+
+/**
+ * Summary of one Paper Strategy as returned by GET /execution/paper/status.
+ * Matches the shape mapped in ExecutionService.getPaperStatus().
+ */
+export interface PaperStrategySummary {
+  strategyId: string;
+  pair: string;
+  exchange: 'binance' | 'bybit';
+  capital: number;
+  status: 'active' | 'stopping' | 'stopped' | 'completed' | 'error';
+  startedAt: string;
+  stoppedAt: string | null;
+  completedRounds: number;
+  realizedPnl: number;
+  totalOrders: number;
 }
 
 /**
@@ -313,6 +331,52 @@ export interface PaperStatus {
  */
 export async function getPaperStatus(): Promise<PaperStatus | null> {
   return apiFetch<PaperStatus>('/execution/paper/status');
+}
+
+/**
+ * Per-order row from the PaperOrder table. Mirrors GridOrder but:
+ * - `paperStrategyId` instead of `gridStrategyId`
+ * - `globalOrderIndex` instead of `globalIndex`
+ * - No `slippagePercent` (paper fills are perfect at trigger price)
+ */
+export interface PaperOrder {
+  id: string;
+  clientOrderId: string;
+  paperStrategyId: string;
+  sectionIndex: number;
+  globalOrderIndex: number;
+  gridPrice: number;
+  tpPrice: number;
+  allocatedCapital: number;
+  estimatedQuantity: number;
+  status:
+    | 'pending'
+    | 'buy_placed'
+    | 'buy_filled'
+    | 'tp_placed'
+    | 'tp_filled'
+    | 'cancelled'
+    | 'error';
+  buyFilledPrice: number | null;
+  buyFilledQuantity: number | null;
+  tpFilledPrice: number | null;
+  realizedPnl: number | null;
+  buyFee: number | null;
+  tpFee: number | null;
+  filledAt: string | null;
+  tpFilledAt: string | null;
+  updatedAt: string;
+}
+
+/**
+ * GET /execution/paper/orders/:strategyId
+ * Returns all paper grid orders for a given paper strategy, sorted by
+ * globalOrderIndex ASC. Mirrors getStrategyOrders() but for the paper
+ * trading tables — used by the Trading Grid page when Trading Mode is
+ * 'paper' to render the grid-level execution log.
+ */
+export async function getPaperStrategyOrders(strategyId: string): Promise<PaperOrder[] | null> {
+  return apiFetch<PaperOrder[]>(`/execution/paper/orders/${strategyId}`);
 }
 
 // ============================================================

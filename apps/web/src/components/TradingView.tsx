@@ -8,8 +8,15 @@ import {
   Loader2,
   WifiOff,
 } from 'lucide-react';
-import type { ActiveStrategy, GridOrder } from '@/lib/api';
-import { getActiveStrategies, getStrategyOrders, stopExecution } from '@/lib/api';
+import type { ActiveStrategy, GridOrder, TradingMode, PaperStatus, PaperOrder, PaperStrategySummary } from '@/lib/api';
+import {
+  getActiveStrategies,
+  getStrategyOrders,
+  stopExecution,
+  getPaperStatus,
+  getPaperStrategyOrders,
+  stopPaperExecution,
+} from '@/lib/api';
 
 // -----------------------------------------------------------------------
 // Helpers
@@ -37,9 +44,104 @@ function avgSlippage(orders: GridOrder[]): string {
   return `${avg >= 0 ? '+' : ''}${avg.toFixed(2)}%`;
 }
 
-export const TradingView: React.FC = () => {
-  const [strategy, setStrategy] = useState<ActiveStrategy | null>(null);
-  const [orders, setOrders] = useState<GridOrder[]>([]);
+// -----------------------------------------------------------------------
+// Internal display shape — unified across live/paper so the render code
+// below doesn't need to branch on Trading Mode.
+// -----------------------------------------------------------------------
+
+interface DisplayStrategy {
+  id: string;
+  pair: string;
+  exchange: string;
+  capital: number;
+  sectionCount: number;
+  totalGridLevels: number;
+}
+
+interface DisplayOrder {
+  id: string;
+  globalIndex: number;
+  sectionIndex: number;
+  gridPrice: number;
+  tpPrice: number;
+  buyFilledPrice: number | null;
+  slippagePercent: number | null;
+  status: GridOrder['status'];
+  realizedPnl: number | null;
+}
+
+/**
+ * Pick the first ACTIVE strategy from a PaperStatus response (preferring
+ * active over stopped) and shape it into our internal DisplayStrategy.
+ *
+ * Paper strategies don't carry sectionCount/totalGridLevels directly —
+ * sectionCount is approximated from the per-section spread of the orders
+ * (assumes blueprint layout is contiguous; if a paper strategy has zero
+ * orders we default to 1, matching how live treats 1-section strategies).
+ */
+function pickActivePaperStrategy(status: PaperStatus | null): DisplayStrategy | null {
+  if (!status) return null;
+  const active = status.strategies.find((s) => s.status === 'active');
+  const target: PaperStrategySummary | undefined = active ?? status.strategies[0];
+  if (!target) return null;
+
+  // totalOrders is the total across all sections, so we can't use it as
+  // totalGridLevels. The grid-level table is fetched separately by
+  // getPaperStrategyOrders(), which carries the truth. Until that returns
+  // we set a placeholder of 0; the table render fixes this on first
+  // successful fetch. sectionCount stays 0 — the banner falls back to
+  // showing "N Grid Levels" only.
+  return {
+    id: target.strategyId,
+    pair: target.pair,
+    exchange: target.exchange,
+    capital: target.capital,
+    sectionCount: 0,
+    totalGridLevels: target.totalOrders,
+  };
+}
+
+/** Project a raw GridOrder from the live API into DisplayOrder. */
+function toDisplayOrder(o: GridOrder): DisplayOrder {
+  return {
+    id: o.id,
+    // Prisma column is `globalOrderIndex`; runtime response field is the same
+    // (Prisma-generated JSON keys). Fall back to `globalIndex` defensively in
+    // case the field name ever changes — the live path tolerates either.
+    globalIndex: (o as unknown as { globalOrderIndex?: number }).globalOrderIndex ?? o.globalIndex,
+    sectionIndex: o.sectionIndex,
+    gridPrice: o.gridPrice,
+    tpPrice: o.tpPrice,
+    buyFilledPrice: o.buyFilledPrice,
+    slippagePercent: o.slippagePercent,
+    status: o.status,
+    realizedPnl: o.realizedPnl,
+  };
+}
+
+/** Project a raw PaperOrder from the paper API into DisplayOrder.
+ *  Paper fills are perfect (no slippage), so slippagePercent is always null. */
+function paperOrderToDisplayOrder(o: PaperOrder): DisplayOrder {
+  return {
+    id: o.id,
+    globalIndex: o.globalOrderIndex,
+    sectionIndex: o.sectionIndex,
+    gridPrice: o.gridPrice,
+    tpPrice: o.tpPrice,
+    buyFilledPrice: o.buyFilledPrice,
+    slippagePercent: null,
+    status: o.status,
+    realizedPnl: o.realizedPnl,
+  };
+}
+
+interface TradingViewProps {
+  tradingMode: TradingMode;
+}
+
+export const TradingView: React.FC<TradingViewProps> = ({ tradingMode }) => {
+  const [strategy, setStrategy] = useState<DisplayStrategy | null>(null);
+  const [orders, setOrders] = useState<DisplayOrder[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isLive, setIsLive] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
@@ -47,9 +149,63 @@ export const TradingView: React.FC = () => {
   const [lastSync, setLastSync] = useState<Date | null>(null);
 
   // ------------------------------------------------------------------
-  // Fetch active strategy + its orders
+  // Fetch active strategy + its orders — branched on Trading Mode.
+  //
+  // Live:   GET /execution/active        → list of GridStrategy
+  //         GET /execution/orders/:id    → list of GridOrder
+  //
+  // Paper:  GET /execution/paper/status  → list of PaperStrategy (in status)
+  //         GET /execution/paper/orders/:id → list of PaperOrder
+  //
+  // Both paths normalize to DisplayStrategy / DisplayOrder so the render
+  // code below is mode-agnostic.
   // ------------------------------------------------------------------
   const fetchData = useCallback(async () => {
+    if (tradingMode === 'paper') {
+      const status = await getPaperStatus();
+      const picked = pickActivePaperStrategy(status);
+      if (!picked) {
+        setStrategy(null);
+        setOrders([]);
+        setIsLive(false);
+        setIsLoading(false);
+        setLastSync(new Date());
+        return;
+      }
+
+      setStrategy(picked);
+      setStrategyStatus(picked.id ? 'active' : 'stopped');
+
+      const paperOrders = await getPaperStrategyOrders(picked.id);
+      if (paperOrders) {
+        const sorted = [...paperOrders]
+          .map(paperOrderToDisplayOrder)
+          .sort((a, b) => a.globalIndex - b.globalIndex);
+        setOrders(sorted);
+        setIsLive(true);
+        // Backfill sectionCount from the actual orders (1 section = 1 contiguous
+        // range starting at sectionIndex 0; multi-section strategies use
+        // increasing sectionIndex values).
+        const sectionCount = sorted.reduce(
+          (max, o) => Math.max(max, o.sectionIndex + 1),
+          0,
+        );
+        setStrategy((prev) =>
+          prev && prev.id === picked.id
+            ? { ...prev, sectionCount, totalGridLevels: sorted.length }
+            : prev,
+        );
+      } else {
+        setOrders([]);
+        setIsLive(false);
+      }
+
+      setIsLoading(false);
+      setLastSync(new Date());
+      return;
+    }
+
+    // ---------------- Live ----------------
     const strategies = await getActiveStrategies();
 
     if (!strategies || strategies.length === 0) {
@@ -61,17 +217,32 @@ export const TradingView: React.FC = () => {
       return;
     }
 
-    // Use the first active strategy
-    const active = strategies[0];
-    setStrategy(active);
+    // Use the first active strategy. The live response uses `id` (per
+    // ActiveStrategy interface) — `strategyId` is a defensive fallback.
+    const raw = strategies[0] as unknown as ActiveStrategy & { strategyId?: string };
+    const activeStrategy: DisplayStrategy = {
+      id: raw.id ?? raw.strategyId ?? '',
+      pair: raw.pair,
+      exchange: raw.exchange,
+      capital: raw.capital,
+      sectionCount: (raw as unknown as { sectionCount?: number }).sectionCount ?? 0,
+      totalGridLevels: (raw as unknown as { totalGridLevels?: number }).totalGridLevels ?? 0,
+    };
+    setStrategy(activeStrategy);
     setStrategyStatus('active');
 
-    const orderData = await getStrategyOrders(active.id);
+    const orderData = await getStrategyOrders(activeStrategy.id);
     if (orderData) {
-      // Sort by globalIndex ascending
-      const sorted = [...orderData].sort((a, b) => a.globalIndex - b.globalIndex);
+      const sorted = [...orderData].map(toDisplayOrder).sort((a, b) => a.globalIndex - b.globalIndex);
       setOrders(sorted);
       setIsLive(true);
+      // Backfill totalGridLevels from the actual orders (in case the active
+      // strategy summary didn't include it).
+      setStrategy((prev) =>
+        prev && prev.id === activeStrategy.id
+          ? { ...prev, totalGridLevels: sorted.length }
+          : prev,
+      );
     } else {
       setOrders([]);
       setIsLive(false);
@@ -79,10 +250,16 @@ export const TradingView: React.FC = () => {
 
     setIsLoading(false);
     setLastSync(new Date());
-  }, []);
+  }, [tradingMode]);
 
-  // Initial load
+  // Initial load + refetch whenever tradingMode flips so the user can
+  // switch between Live and Paper without a hard reload.
   useEffect(() => {
+    setIsLoading(true);
+    setStrategy(null);
+    setOrders([]);
+    setIsLive(false);
+    setStrategyStatus('active');
     void fetchData();
   }, [fetchData]);
 
@@ -95,12 +272,15 @@ export const TradingView: React.FC = () => {
   }, [fetchData]);
 
   // ------------------------------------------------------------------
-  // Stop strategy
+  // Stop strategy — branches on Trading Mode (live vs paper endpoint).
   // ------------------------------------------------------------------
   const handleStopStrategy = async () => {
     if (!strategy) return;
     setIsStopping(true);
-    const result = await stopExecution(strategy.id);
+    const result =
+      tradingMode === 'paper'
+        ? await stopPaperExecution(strategy.id)
+        : await stopExecution(strategy.id);
     if (result) {
       setStrategyStatus('stopped');
     }
@@ -115,7 +295,7 @@ export const TradingView: React.FC = () => {
     (o) => o.status === 'buy_filled' || o.status === 'tp_placed',
   );
   const totalRealizedPnl = completedOrders.reduce((s, o) => s + (o.realizedPnl ?? 0), 0);
-  const slippage = avgSlippage(orders.filter((o) => o.slippagePercent !== null));
+  const slippage = avgSlippage(orders.filter((o) => o.slippagePercent !== null) as GridOrder[]);
 
   // ------------------------------------------------------------------
   // Loading skeleton
@@ -178,8 +358,8 @@ export const TradingView: React.FC = () => {
             </div>
             <p className="text-xs text-zinc-400">
               {strategy.exchange.charAt(0).toUpperCase() + strategy.exchange.slice(1)} Spot •{' '}
-              {strategy.sectionCount} Sections •{' '}
-              {strategy.totalGridLevels ?? orders.length} Grid Levels
+              {strategy.sectionCount > 0 ? `${strategy.sectionCount} Sections • ` : ''}
+              {strategy.totalGridLevels} Grid Levels
             </p>
           </div>
         </div>
