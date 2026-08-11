@@ -349,7 +349,25 @@ export class BinanceProvider extends BaseExchangeProvider {
   readonly name: ExchangeName = 'binance';
 
   protected createClient(config: Record<string, any>): any {
-    return new ccxt.binance(config);
+    const client = new ccxt.binance(config);
+
+    // api.binance.com's public REST (spot ticker/OHLCV/orderbook/markets)
+    // is blocked from this VPS's network — the exact same issue already
+    // worked around in ai-engine and the Python ai-service, but that fix
+    // was never applied here. Left unpatched, every fetchTicker() call
+    // silently fails and callers (see execution.service.ts) fall back to
+    // fake prices when building grid strategies.
+    //
+    // Only the `public` URL is redirected to the data-api.binance.vision
+    // mirror — it only serves market data. `private` (and the sapi/fapi/
+    // dapi/papi endpoints used for balances and live order execution with
+    // real API keys) are left pointing at api.binance.com, unaffected.
+    client.urls['api'] = {
+      ...client.urls['api'],
+      public: 'https://data-api.binance.vision/api/v3',
+    };
+
+    return client;
   }
 }
 
