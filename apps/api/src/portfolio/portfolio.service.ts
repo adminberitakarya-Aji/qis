@@ -68,11 +68,23 @@ export class PortfolioService {
       // Virtual wallet balance across all paper accounts — this is the
       // paper-mode equivalent of "idle + committed capital" since there's
       // no live exchange balance to call for a simulated account.
+      //
+      // No PaperAccount row exists until the user's first `paper/start` call
+      // (see execution.service.ts's upsert). Before that, this correctly
+      // shows $0 as a literal sum of zero accounts — but that reads as a
+      // bug next to the AI Strategy Builder, which already shows the $100
+      // starting balance for a fresh, not-yet-created account (see
+      // getAvailablePaperBalance). Apply the same default here so a brand
+      // new user sees the same $100 in both places.
+      const PAPER_STARTING_BALANCE = 100;
       const paperAccounts = await this.prisma.paperAccount.findMany({
         where: { userId },
         select: { virtualBalance: true },
       });
-      const virtualWalletBalance = paperAccounts.reduce((sum: number, a: { virtualBalance: number }) => sum + a.virtualBalance, 0);
+      const virtualWalletBalance =
+        paperAccounts.length > 0
+          ? paperAccounts.reduce((sum: number, a: { virtualBalance: number }) => sum + a.virtualBalance, 0)
+          : PAPER_STARTING_BALANCE;
 
       const analytics = await this.analyticsService.getUserAnalytics(userId, 'paper');
 
