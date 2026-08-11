@@ -1186,10 +1186,14 @@ export class ExecutionService {
   }
 
   /**
-   * Returns the paper trading status for a user: virtual balance, active strategies, completed rounds, PnL.
+   * Returns the paper trading status for a user across ALL their paper
+   * accounts (one per exchange). virtualBalance and activeStrategiesCount
+   * are aggregated across exchanges; `strategies` contains every PaperStrategy
+   * from every account so the frontend can filter by the Header's selected
+   * exchange without losing the others.
    */
   async getPaperStatus(userId: string) {
-    const paperAccount = await this.prisma.paperAccount.findFirst({
+    const paperAccounts = await this.prisma.paperAccount.findMany({
       where: { userId },
       include: {
         paperStrategies: {
@@ -1199,53 +1203,70 @@ export class ExecutionService {
       },
     });
 
-    if (!paperAccount) {
+    if (paperAccounts.length === 0) {
       return {
         virtualBalance: 0,
         activeStrategiesCount: 0,
         completedRounds: 0,
         totalRealizedPnl: 0,
         strategies: [],
+        paperAccounts: [],
       };
     }
 
     let completedRounds = 0;
     let totalRealizedPnl = 0;
-    const strategies = paperAccount.paperStrategies.map((s) => {
-      const rounds = s.paperOrders.filter((o) => o.status === 'tp_filled').length;
-      const realizedPnl = s.paperOrders.reduce(
-        (sum, o) => sum + (o.realizedPnl ?? 0),
-        0,
-      );
-      completedRounds += rounds;
-      totalRealizedPnl += realizedPnl;
+    const strategies = paperAccounts.flatMap((paperAccount) =>
+      paperAccount.paperStrategies.map((s) => {
+        const rounds = s.paperOrders.filter((o) => o.status === 'tp_filled').length;
+        const realizedPnl = s.paperOrders.reduce(
+          (sum, o) => sum + (o.realizedPnl ?? 0),
+          0,
+        );
+        completedRounds += rounds;
+        totalRealizedPnl += realizedPnl;
 
-      return {
-        strategyId: s.id,
-        pair: s.pair,
-        // `exchange` is required by the Trading Grid banner ("Binance Spot • N Sections").
-        // PaperAccount already has its own `exchange` field, but each PaperStrategy
-        // carries it too — always equal in practice (a paper strategy is bound to one
-        // exchange's paper account), so we surface PaperStrategy.exchange to keep the
-        // banner honest if a user ever has multi-exchange paper accounts.
-        exchange: s.exchange,
-        capital: s.capital,
-        status: s.status,
-        startedAt: s.startedAt,
-        stoppedAt: s.stoppedAt,
-        completedRounds: rounds,
-        realizedPnl: Number(realizedPnl.toFixed(6)),
-        totalOrders: s.paperOrders.length,
-      };
-    });
+        return {
+          strategyId: s.id,
+          pair: s.pair,
+          // `exchange` is required by the Trading Grid banner ("Binance Spot • N Sections").
+          // PaperAccount already has its own `exchange` field, but each PaperStrategy
+          // carries it too — always equal in practice (a paper strategy is bound to one
+          // exchange's paper account), so we surface PaperStrategy.exchange to keep the
+          // banner honest if a user ever has multi-exchange paper accounts.
+          exchange: s.exchange,
+          capital: s.capital,
+          status: s.status,
+          startedAt: s.startedAt,
+          stoppedAt: s.stoppedAt,
+          completedRounds: rounds,
+          realizedPnl: Number(realizedPnl.toFixed(6)),
+          totalOrders: s.paperOrders.length,
+        };
+      }),
+    );
+
+    const totalVirtualBalance = paperAccounts.reduce(
+      (sum, a) => sum + Number(a.virtualBalance.toFixed(2)),
+      0,
+    );
+    const totalActiveStrategiesCount = paperAccounts.reduce(
+      (sum, a) =>
+        sum + a.paperStrategies.filter((s) => s.status === 'active').length,
+      0,
+    );
 
     return {
-      virtualBalance: Number(paperAccount.virtualBalance.toFixed(2)),
-      exchange: paperAccount.exchange,
-      activeStrategiesCount: paperAccount.paperStrategies.filter((s) => s.status === 'active').length,
+      virtualBalance: totalVirtualBalance,
+      activeStrategiesCount: totalActiveStrategiesCount,
       completedRounds,
       totalRealizedPnl: Number(totalRealizedPnl.toFixed(6)),
       strategies,
+      paperAccounts: paperAccounts.map((a) => ({
+        exchange: a.exchange,
+        label: a.label,
+        virtualBalance: Number(a.virtualBalance.toFixed(2)),
+      })),
     };
   }
 

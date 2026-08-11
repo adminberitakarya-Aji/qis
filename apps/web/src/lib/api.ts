@@ -300,11 +300,17 @@ export async function getPaperBalance(exchange: 'binance' | 'bybit'): Promise<Pa
 
 export interface PaperStatus {
   virtualBalance: number;
-  exchange: 'binance' | 'bybit';
   activeStrategiesCount: number;
   completedRounds: number;
   totalRealizedPnl: number;
   strategies: PaperStrategySummary[];
+  paperAccounts: PaperAccountSummary[];
+}
+
+export interface PaperAccountSummary {
+  exchange: 'binance' | 'bybit';
+  label: string;
+  virtualBalance: number;
 }
 
 /**
