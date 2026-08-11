@@ -379,7 +379,21 @@ export class BybitProvider extends BaseExchangeProvider {
   readonly name: ExchangeName = 'bybit';
 
   protected createClient(config: Record<string, any>): any {
-    return new ccxt.bybit(config);
+    const client = new ccxt.bybit(config);
+
+    // api.bybit.com is blocked from this VPS's network (confirmed via
+    // direct curl test: HTTP 000 / connection failure on api.bybit.com,
+    // while api.bytick.com responds normally). ccxt's bybit implementation
+    // templates every endpoint — public AND private/authenticated — as
+    // `https://api.{hostname}`, resolved from `client.hostname` at request
+    // time. api.bytick.com is Bybit's officially documented global mirror
+    // (used for both market data and live trading), so redirecting the
+    // hostname here fixes ticker/OHLCV/orderbook calls AND real order
+    // execution/balance calls in one change — unlike Binance, there's no
+    // separate market-data-only mirror to worry about.
+    client.hostname = 'bytick.com';
+
+    return client;
   }
 }
 
