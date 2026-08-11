@@ -144,12 +144,13 @@ export default function Home() {
           <AiStrategyView
             key={strategyPair}
             initialPair={strategyPair ?? 'BTC/USDT'}
+            initialExchange={selectedExchange}
             onStrategyApproved={handleStrategyApproved}
             tradingMode={tradingMode}
           />
         );
       case 'trading':
-        return <TradingView tradingMode={tradingMode} />;
+        return <TradingView tradingMode={tradingMode} initialExchange={selectedExchange} />;
       case 'portfolio':
         return <PortfolioView />;
       case 'analytics':

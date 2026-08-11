@@ -47,6 +47,7 @@ interface Blueprint {
 
 interface AiStrategyViewProps {
   initialPair?: string;
+  initialExchange?: 'binance' | 'bybit';
   onStrategyApproved: () => void;
   /** Determines whether approval starts a real exchange execution or a
    *  simulated $100 paper strategy. Comes from the global header toggle. */
@@ -55,13 +56,14 @@ interface AiStrategyViewProps {
 
 export const AiStrategyView: React.FC<AiStrategyViewProps> = ({
   initialPair = 'BTC/USDT',
+  initialExchange = 'binance',
   onStrategyApproved,
   tradingMode,
 }) => {
   const isPaper = tradingMode === 'paper';
   // User Input States
   const [pair, setPair] = useState(initialPair);
-  const [exchange, setExchange] = useState<'binance' | 'bybit'>('binance');
+  const [exchange, setExchange] = useState<'binance' | 'bybit'>(initialExchange);
   // Live-mode capital only — the trader's own free-form input, independent
   // of paper balance. Never overwritten by the paper-balance fetch below,
   // so switching Paper -> Live restores this instead of leaking $100 over.

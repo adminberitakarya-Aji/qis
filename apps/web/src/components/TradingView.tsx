@@ -79,10 +79,14 @@ interface DisplayOrder {
  * (assumes blueprint layout is contiguous; if a paper strategy has zero
  * orders we default to 1, matching how live treats 1-section strategies).
  */
-function pickActivePaperStrategy(status: PaperStatus | null): DisplayStrategy | null {
+function pickActivePaperStrategy(
+  status: PaperStatus | null,
+  exchange: 'binance' | 'bybit',
+): DisplayStrategy | null {
   if (!status) return null;
-  const active = status.strategies.find((s) => s.status === 'active');
-  const target: PaperStrategySummary | undefined = active ?? status.strategies[0];
+  const byExchange = status.strategies.filter((s) => s.exchange === exchange);
+  const active = byExchange.find((s) => s.status === 'active');
+  const target: PaperStrategySummary | undefined = active ?? byExchange[0];
   if (!target) return null;
 
   // totalOrders is the total across all sections, so we can't use it as
@@ -137,9 +141,10 @@ function paperOrderToDisplayOrder(o: PaperOrder): DisplayOrder {
 
 interface TradingViewProps {
   tradingMode: TradingMode;
+  initialExchange?: 'binance' | 'bybit';
 }
 
-export const TradingView: React.FC<TradingViewProps> = ({ tradingMode }) => {
+export const TradingView: React.FC<TradingViewProps> = ({ tradingMode, initialExchange = 'binance' }) => {
   const [strategy, setStrategy] = useState<DisplayStrategy | null>(null);
   const [orders, setOrders] = useState<DisplayOrder[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -147,6 +152,7 @@ export const TradingView: React.FC<TradingViewProps> = ({ tradingMode }) => {
   const [isStopping, setIsStopping] = useState(false);
   const [strategyStatus, setStrategyStatus] = useState<'active' | 'stopped'>('active');
   const [lastSync, setLastSync] = useState<Date | null>(null);
+  const [currentExchange, setCurrentExchange] = useState<'binance' | 'bybit'>(initialExchange);
 
   // ------------------------------------------------------------------
   // Fetch active strategy + its orders — branched on Trading Mode.
@@ -163,7 +169,7 @@ export const TradingView: React.FC<TradingViewProps> = ({ tradingMode }) => {
   const fetchData = useCallback(async () => {
     if (tradingMode === 'paper') {
       const status = await getPaperStatus();
-      const picked = pickActivePaperStrategy(status);
+      const picked = pickActivePaperStrategy(status, currentExchange);
       if (!picked) {
         setStrategy(null);
         setOrders([]);
@@ -217,9 +223,13 @@ export const TradingView: React.FC<TradingViewProps> = ({ tradingMode }) => {
       return;
     }
 
-    // Use the first active strategy. The live response uses `id` (per
-    // ActiveStrategy interface) — `strategyId` is a defensive fallback.
-    const raw = strategies[0] as unknown as ActiveStrategy & { strategyId?: string };
+    // Filter by current exchange, then pick the first active strategy.
+    // The live response uses `id` (per ActiveStrategy interface) —
+    // `strategyId` is a defensive fallback.
+    const byExchange = (strategies as unknown as ActiveStrategy[]).filter(
+      (s) => s.exchange === currentExchange,
+    );
+    const raw = (byExchange[0] ?? strategies[0]) as unknown as ActiveStrategy & { strategyId?: string };
     const activeStrategy: DisplayStrategy = {
       id: raw.id ?? raw.strategyId ?? '',
       pair: raw.pair,
@@ -250,10 +260,9 @@ export const TradingView: React.FC<TradingViewProps> = ({ tradingMode }) => {
 
     setIsLoading(false);
     setLastSync(new Date());
-  }, [tradingMode]);
+  }, [tradingMode, currentExchange]);
 
-  // Initial load + refetch whenever tradingMode flips so the user can
-  // switch between Live and Paper without a hard reload.
+  // Initial load + refetch whenever tradingMode or currentExchange changes.
   useEffect(() => {
     setIsLoading(true);
     setStrategy(null);
@@ -261,7 +270,7 @@ export const TradingView: React.FC<TradingViewProps> = ({ tradingMode }) => {
     setIsLive(false);
     setStrategyStatus('active');
     void fetchData();
-  }, [fetchData]);
+  }, [fetchData, currentExchange]);
 
   // Auto-refresh every 5 seconds
   useEffect(() => {
