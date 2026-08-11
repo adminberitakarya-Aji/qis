@@ -37,14 +37,63 @@ export class PortfolioService {
    *   filled in the last 24 hours specifically — not all-time.
    * - winRate / totalRoundsCompleted: all-time, matching AnalyticsService.
    */
-  async getUserPortfolioSummary(userId: string) {
+  /**
+   * @param mode 'live' = real exchange strategies. 'paper' = virtual-balance
+   *             strategies (separate tables — see paper_trading.md).
+   */
+  async getUserPortfolioSummary(userId: string, mode: 'live' | 'paper' = 'live') {
+    if (mode === 'paper') {
+      const activeStrategies = await this.prisma.paperStrategy.findMany({
+        where: { userId, status: 'active' },
+        select: { capital: true, pair: true },
+      });
+
+      const totalCapitalUsdt = activeStrategies.reduce((sum: number, s: { capital: number; pair: string }) => sum + s.capital, 0);
+      const activeStrategyPairs = Array.from(new Set(activeStrategies.map((s: { capital: number; pair: string }) => s.pair)));
+
+      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const recentFilledOrders = await this.prisma.paperOrder.findMany({
+        where: {
+          paperStrategy: { userId },
+          status: 'tp_filled',
+          tpFilledAt: { gte: twentyFourHoursAgo },
+        },
+        select: { realizedPnl: true },
+      });
+      const realizedPnl24hUsdt = recentFilledOrders.reduce(
+        (sum: number, o: { realizedPnl: number | null }) => sum + (o.realizedPnl ?? 0),
+        0,
+      );
+
+      // Virtual wallet balance across all paper accounts — this is the
+      // paper-mode equivalent of "idle + committed capital" since there's
+      // no live exchange balance to call for a simulated account.
+      const paperAccounts = await this.prisma.paperAccount.findMany({
+        where: { userId },
+        select: { virtualBalance: true },
+      });
+      const virtualWalletBalance = paperAccounts.reduce((sum: number, a: { virtualBalance: number }) => sum + a.virtualBalance, 0);
+
+      const analytics = await this.analyticsService.getUserAnalytics(userId, 'paper');
+
+      return {
+        totalCapitalUsdt: Number(totalCapitalUsdt.toFixed(2)),
+        activeStrategies: activeStrategies.length,
+        activeStrategyPairs,
+        realizedPnl24hUsdt: Number(realizedPnl24hUsdt.toFixed(2)),
+        totalRoundsCompleted: analytics.totalRounds,
+        winRate: analytics.winRate,
+        virtualWalletBalance: Number(virtualWalletBalance.toFixed(2)),
+      };
+    }
+
     const activeStrategies = await this.prisma.gridStrategy.findMany({
       where: { userId, status: 'active' },
       select: { capital: true, pair: true },
     });
 
-    const totalCapitalUsdt = activeStrategies.reduce((sum, s) => sum + s.capital, 0);
-    const activeStrategyPairs = Array.from(new Set(activeStrategies.map((s) => s.pair)));
+    const totalCapitalUsdt = activeStrategies.reduce((sum: number, s: { capital: number; pair: string }) => sum + s.capital, 0);
+    const activeStrategyPairs = Array.from(new Set(activeStrategies.map((s: { capital: number; pair: string }) => s.pair)));
 
     const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const recentFilledOrders = await this.prisma.gridOrder.findMany({
@@ -56,11 +105,11 @@ export class PortfolioService {
       select: { realizedPnl: true },
     });
     const realizedPnl24hUsdt = recentFilledOrders.reduce(
-      (sum, o) => sum + (o.realizedPnl ?? 0),
+      (sum: number, o: { realizedPnl: number | null }) => sum + (o.realizedPnl ?? 0),
       0,
     );
 
-    const analytics = await this.analyticsService.getUserAnalytics(userId);
+    const analytics = await this.analyticsService.getUserAnalytics(userId, 'live');
 
     return {
       totalCapitalUsdt: Number(totalCapitalUsdt.toFixed(2)),

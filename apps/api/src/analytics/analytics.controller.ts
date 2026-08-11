@@ -1,4 +1,4 @@
-import { Controller, Get, Param, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { AnalyticsService } from './analytics.service';
@@ -6,11 +6,14 @@ import { AnalyticsService } from './analytics.service';
 @Controller('analytics')
 @UseGuards(JwtAuthGuard)
 export class AnalyticsController {
-  constructor(private readonly analyticsService: AnalyticsService) {}
+  constructor(private readonly analyticsService: AnalyticsService) { }
 
   @Get('summary')
-  async getUserAnalytics(@CurrentUser() user: { id: string }) {
-    const data = await this.analyticsService.getUserAnalytics(user.id);
+  async getUserAnalytics(
+    @CurrentUser() user: { id: string },
+    @Query('mode') mode?: 'live' | 'paper',
+  ) {
+    const data = await this.analyticsService.getUserAnalytics(user.id, mode === 'paper' ? 'paper' : 'live');
     return {
       success: true,
       message: 'User analytics summary retrieved',

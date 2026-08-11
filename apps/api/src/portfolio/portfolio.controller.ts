@@ -1,4 +1,4 @@
-import { Controller, Get, Param, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { PortfolioService } from './portfolio.service';
@@ -9,8 +9,11 @@ export class PortfolioController {
   constructor(private readonly portfolioService: PortfolioService) { }
 
   @Get('summary')
-  async getPortfolioSummary(@CurrentUser() user: { id: string }) {
-    const data = await this.portfolioService.getUserPortfolioSummary(user.id);
+  async getPortfolioSummary(
+    @CurrentUser() user: { id: string },
+    @Query('mode') mode?: 'live' | 'paper',
+  ) {
+    const data = await this.portfolioService.getUserPortfolioSummary(user.id, mode === 'paper' ? 'paper' : 'live');
     return {
       success: true,
       message: 'Portfolio summary retrieved',
