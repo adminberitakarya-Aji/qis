@@ -62,7 +62,10 @@ export const AiStrategyView: React.FC<AiStrategyViewProps> = ({
   // User Input States
   const [pair, setPair] = useState(initialPair);
   const [exchange, setExchange] = useState<'binance' | 'bybit'>('binance');
-  const [capital, setCapital] = useState(10000);
+  // Live-mode capital only — the trader's own free-form input, independent
+  // of paper balance. Never overwritten by the paper-balance fetch below,
+  // so switching Paper -> Live restores this instead of leaking $100 over.
+  const [liveCapital, setLiveCapital] = useState(10000);
   const [sectionCount, setSectionCount] = useState<1 | 2 | 3>(3);
   const [allocations, setAllocations] = useState<number[]>([35, 35, 30]);
 
@@ -81,13 +84,16 @@ export const AiStrategyView: React.FC<AiStrategyViewProps> = ({
       setIsPaperBalanceLoading(false);
       if (result) {
         setPaperBalance(result.virtualBalance);
-        setCapital(result.virtualBalance);
       }
     });
     return () => {
       cancelled = true;
     };
   }, [isPaper, exchange]);
+
+  // Single source of truth for every calculation/API call below — Live
+  // mode uses the trader's own input, Paper mode uses the locked balance.
+  const effectiveCapital = isPaper ? paperBalance ?? 0 : liveCapital;
 
   // Generated Blueprint State
   const [isBuilding, setIsBuilding] = useState(false);
@@ -110,7 +116,7 @@ export const AiStrategyView: React.FC<AiStrategyViewProps> = ({
     const bp = await buildStrategy({
       exchange,
       pair,
-      capital,
+      capital: effectiveCapital,
       sectionCount,
       capitalAllocationPercent: allocations,
     });
@@ -123,9 +129,9 @@ export const AiStrategyView: React.FC<AiStrategyViewProps> = ({
       setBlueprint({
         ...(bp as unknown as Blueprint),
         simulation: (simData as unknown as BlueprintSimulation) || {
-          estimatedNetProfitUsdt: Number((capital * 0.084).toFixed(2)),
+          estimatedNetProfitUsdt: Number((effectiveCapital * 0.084).toFixed(2)),
           estimatedNetProfitPercent: 8.4,
-          totalFeesUsdt: Number((capital * 0.006).toFixed(2)),
+          totalFeesUsdt: Number((effectiveCapital * 0.006).toFixed(2)),
           maxDrawdownPercent: 3.2,
           completedRounds: 28,
         },
@@ -142,7 +148,7 @@ export const AiStrategyView: React.FC<AiStrategyViewProps> = ({
       const generated = {
         id: `bp_${Date.now()}_x9a2`,
         pair,
-        tradingCapital: capital,
+        tradingCapital: effectiveCapital,
         sectionCount,
         confidenceScore: 92,
         aiReasoning:
@@ -151,16 +157,16 @@ export const AiStrategyView: React.FC<AiStrategyViewProps> = ({
         sections: allocations.map((alloc, idx) => ({
           index: idx,
           allocationPercent: alloc,
-          allocatedCapitalUsdt: (capital * alloc) / 100,
+          allocatedCapitalUsdt: (effectiveCapital * alloc) / 100,
           gridCount: idx === 0 ? 10 : idx === 1 ? 7 : 5,
           gridDistancePercent: 0.5 + idx * 0.25,
           sectionGapPercent: 1.8 + idx * 1.2,
           minNetProfitPercent: 0.5 + idx * 0.35,
         })),
         simulation: {
-          estimatedNetProfitUsdt: Number((capital * 0.084).toFixed(2)),
+          estimatedNetProfitUsdt: Number((effectiveCapital * 0.084).toFixed(2)),
           estimatedNetProfitPercent: 8.4,
-          totalFeesUsdt: Number((capital * 0.006).toFixed(2)),
+          totalFeesUsdt: Number((effectiveCapital * 0.006).toFixed(2)),
           maxDrawdownPercent: 3.2,
           completedRounds: 28,
         },
@@ -242,8 +248,8 @@ export const AiStrategyView: React.FC<AiStrategyViewProps> = ({
                   type="button"
                   onClick={() => setExchange(ex)}
                   className={`py-2 rounded-xl text-xs font-bold font-mono transition-all border capitalize ${exchange === ex
-                      ? 'bg-electric-blue/20 border-electric-blue text-electric-blue'
-                      : 'bg-pitch-surface border-pitch-border text-zinc-400 hover:text-white'
+                    ? 'bg-electric-blue/20 border-electric-blue text-electric-blue'
+                    : 'bg-pitch-surface border-pitch-border text-zinc-400 hover:text-white'
                     }`}
                 >
                   {ex.charAt(0).toUpperCase() + ex.slice(1)}
@@ -297,13 +303,13 @@ export const AiStrategyView: React.FC<AiStrategyViewProps> = ({
               <DollarSign className="w-4 h-4 text-zinc-500 absolute left-3.5 top-3" />
               <input
                 type="number"
-                value={isPaper ? paperBalance ?? 0 : capital}
-                onChange={(e) => !isPaper && setCapital(Number(e.target.value))}
+                value={isPaper ? paperBalance ?? 0 : liveCapital}
+                onChange={(e) => !isPaper && setLiveCapital(Number(e.target.value))}
                 readOnly={isPaper}
                 disabled={isPaper && isPaperBalanceLoading}
                 className={`w-full pl-9 pr-4 py-2.5 rounded-xl border text-sm font-mono outline-none ${isPaper
-                    ? 'bg-pitch-surface/50 border-amber-500/30 text-amber-300 cursor-not-allowed'
-                    : 'bg-pitch-surface border-pitch-border text-white focus:border-electric-blue'
+                  ? 'bg-pitch-surface/50 border-amber-500/30 text-amber-300 cursor-not-allowed'
+                  : 'bg-pitch-surface border-pitch-border text-white focus:border-electric-blue'
                   }`}
               />
             </div>
@@ -326,8 +332,8 @@ export const AiStrategyView: React.FC<AiStrategyViewProps> = ({
                   type="button"
                   onClick={() => handleSectionCountChange(num as 1 | 2 | 3)}
                   className={`py-2.5 rounded-xl text-xs font-bold font-mono transition-all border ${sectionCount === num
-                      ? 'bg-electric-blue/20 border-electric-blue text-electric-blue'
-                      : 'bg-pitch-surface border-pitch-border text-zinc-400 hover:text-white'
+                    ? 'bg-electric-blue/20 border-electric-blue text-electric-blue'
+                    : 'bg-pitch-surface border-pitch-border text-zinc-400 hover:text-white'
                     }`}
                 >
                   {num} {num === 1 ? 'Section' : 'Sections'}
@@ -520,8 +526,8 @@ export const AiStrategyView: React.FC<AiStrategyViewProps> = ({
               {/* User Approval Decision Box */}
               <div
                 className={`p-6 rounded-2xl border flex items-center justify-between ${isPaper
-                    ? 'bg-amber-950/20 border-amber-500/30'
-                    : 'bg-emerald-950/20 border-emerald-500/30 glow-emerald'
+                  ? 'bg-amber-950/20 border-amber-500/30'
+                  : 'bg-emerald-950/20 border-emerald-500/30 glow-emerald'
                   }`}
               >
                 <div className="flex items-center gap-3">
@@ -543,8 +549,8 @@ export const AiStrategyView: React.FC<AiStrategyViewProps> = ({
                   onClick={() => void handleApproveStrategy()}
                   disabled={isExecuting}
                   className={`px-6 py-3 rounded-xl font-extrabold text-sm transition-all flex items-center gap-2 shadow-lg ${isPaper
-                      ? 'bg-amber-400 hover:bg-amber-300 text-pitch-bg shadow-amber-500/20'
-                      : 'bg-emerald-500 hover:bg-emerald-400 text-pitch-bg shadow-emerald-500/20'
+                    ? 'bg-amber-400 hover:bg-amber-300 text-pitch-bg shadow-amber-500/20'
+                    : 'bg-emerald-500 hover:bg-emerald-400 text-pitch-bg shadow-emerald-500/20'
                     }`}
                 >
                   {isExecuting ? (
