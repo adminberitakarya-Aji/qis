@@ -40,7 +40,14 @@ export interface PortfolioSummary {
   realizedPnl24hUsdt: number;
   totalRoundsCompleted: number;
   winRate: number;
+  /** Only present when mode='paper' — sum of virtualBalance across paper accounts. */
+  virtualWalletBalance?: number;
 }
+
+/** Global trading mode — switches every dashboard/analytics/portfolio query
+ *  between real exchange strategies and virtual-balance paper strategies.
+ *  Paper trading never touches exchange API keys (see paper_trading.md). */
+export type TradingMode = 'live' | 'paper';
 
 // ============================================================
 // Execution / Trading Grid Types
@@ -57,13 +64,13 @@ export interface GridOrder {
   allocatedCapital: number;
   estimatedQuantity: number;
   status:
-    | 'pending'
-    | 'buy_placed'
-    | 'buy_filled'
-    | 'tp_placed'
-    | 'tp_filled'
-    | 'cancelled'
-    | 'error';
+  | 'pending'
+  | 'buy_placed'
+  | 'buy_filled'
+  | 'tp_placed'
+  | 'tp_filled'
+  | 'cancelled'
+  | 'error';
   buyFilledPrice: number | null;
   buyFilledQuantity: number | null;
   tpFilledPrice: number | null;
@@ -192,11 +199,13 @@ export async function getTickerPrice(
 // ============================================================
 
 /**
- * GET /portfolio/summary
+ * GET /portfolio/summary?mode=live|paper
  * Returns total portfolio capital, active strategies, and 24h PnL.
+ * mode='paper' returns virtual-balance data from PaperStrategy/PaperOrder,
+ * completely separate from real GridStrategy/GridOrder tables.
  */
-export async function getPortfolioSummary(): Promise<PortfolioSummary | null> {
-  return apiFetch<PortfolioSummary>('/portfolio/summary');
+export async function getPortfolioSummary(mode: TradingMode = 'live'): Promise<PortfolioSummary | null> {
+  return apiFetch<PortfolioSummary>(`/portfolio/summary?mode=${mode}`);
 }
 
 // ============================================================
@@ -229,17 +238,78 @@ export async function stopExecution(strategyId: string): Promise<Record<string, 
   });
 }
 
+/**
+ * POST /execution/start
+ * Starts REAL execution of an approved Strategy Blueprint — places live
+ * orders on the exchange. Requires a connected Exchange Account with API keys.
+ */
+export async function startExecution(
+  blueprintId: string,
+  exchangeAccountId: string,
+): Promise<Record<string, unknown> | null> {
+  return apiFetch<Record<string, unknown>>('/execution/start', {
+    method: 'POST',
+    body: JSON.stringify({ blueprintId, exchangeAccountId }),
+  });
+}
+
+// ============================================================
+// Paper Trading Endpoints (Virtual Balance, No Real Money)
+// ============================================================
+
+/**
+ * POST /execution/paper/start
+ * Starts a PAPER strategy from an approved Blueprint — simulated fills
+ * against a $100 virtual balance, using live market prices. No API key needed.
+ */
+export async function startPaperExecution(
+  blueprintId: string,
+  exchange: 'binance' | 'bybit',
+): Promise<Record<string, unknown> | null> {
+  return apiFetch<Record<string, unknown>>('/execution/paper/start', {
+    method: 'POST',
+    body: JSON.stringify({ blueprintId, exchange }),
+  });
+}
+
+/**
+ * POST /execution/paper/stop/:strategyId
+ * Stops a running paper strategy and settles any open virtual position.
+ */
+export async function stopPaperExecution(strategyId: string): Promise<Record<string, unknown> | null> {
+  return apiFetch<Record<string, unknown>>(`/execution/paper/stop/${strategyId}`, {
+    method: 'POST',
+  });
+}
+
+export interface PaperStatus {
+  virtualBalance: number;
+  activeStrategiesCount: number;
+  completedRounds: number;
+  totalRealizedPnl: number;
+  strategies: Array<Record<string, unknown>>;
+}
+
+/**
+ * GET /execution/paper/status
+ * Returns virtual balance + all paper strategies (active & historical) for
+ * the current user, including per-strategy paper orders.
+ */
+export async function getPaperStatus(): Promise<PaperStatus | null> {
+  return apiFetch<PaperStatus>('/execution/paper/status');
+}
+
 // ============================================================
 // Analytics Endpoints
 // ============================================================
 
 /**
- * GET /analytics/summary
+ * GET /analytics/summary?mode=live|paper
  * Returns full analytics summary for the current user:
  * total PnL, fees, win rate, drawdown, and monthly breakdown.
  */
-export async function getAnalyticsSummary(): Promise<AnalyticsSummary | null> {
-  return apiFetch<AnalyticsSummary>('/analytics/summary');
+export async function getAnalyticsSummary(mode: TradingMode = 'live'): Promise<AnalyticsSummary | null> {
+  return apiFetch<AnalyticsSummary>(`/analytics/summary?mode=${mode}`);
 }
 
 // ============================================================

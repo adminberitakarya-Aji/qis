@@ -8,13 +8,17 @@ import {
   Bell,
   ShieldCheck,
   LogOut,
+  FlaskConical,
 } from 'lucide-react';
 import type { User as AuthUser } from '@/lib/auth';
+import type { TradingMode } from '@/lib/api';
 
 interface HeaderProps {
   title: string;
   selectedExchange: 'binance' | 'bybit';
   setSelectedExchange: (exchange: 'binance' | 'bybit') => void;
+  tradingMode: TradingMode;
+  setTradingMode: (mode: TradingMode) => void;
   realtimeStatus?: 'connecting' | 'connected' | 'disconnected';
   user?: AuthUser | null;
   onLogout?: () => void;
@@ -26,6 +30,8 @@ export const Header: React.FC<HeaderProps> = ({
   title,
   selectedExchange,
   setSelectedExchange,
+  tradingMode,
+  setTradingMode,
   realtimeStatus = 'disconnected',
   user,
   onLogout,
@@ -33,35 +39,72 @@ export const Header: React.FC<HeaderProps> = ({
 }) => {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const isPaper = tradingMode === 'paper';
 
   return (
     <header className="h-16 bg-pitch-bg border-b border-pitch-border px-8 flex items-center justify-between sticky top-0 z-20">
       {/* Title */}
       <div className="flex items-center gap-4">
         <h2 className="text-xl font-bold text-white tracking-tight">{title}</h2>
-        <div className="flex items-center gap-2 px-2.5 py-1 rounded-full bg-emerald-profit/10 border border-emerald-profit/20 text-emerald-profit text-xs font-semibold">
+        <div
+          className={`flex items-center gap-2 px-2.5 py-1 rounded-full text-xs font-semibold ${isPaper
+              ? 'bg-amber-400/10 border border-amber-400/20 text-amber-400'
+              : 'bg-emerald-profit/10 border border-emerald-profit/20 text-emerald-profit'
+            }`}
+        >
           <Activity className="w-3.5 h-3.5 animate-pulse" />
-          <span>Live Execution Engine</span>
+          <span>{isPaper ? 'Paper Execution Engine' : 'Live Execution Engine'}</span>
         </div>
         {/* Realtime Connection Status */}
-        <div className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-mono font-bold ${
-          realtimeStatus === 'connected'
+        <div className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-mono font-bold ${realtimeStatus === 'connected'
             ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400'
             : realtimeStatus === 'connecting'
-            ? 'bg-amber-400/10 border border-amber-400/30 text-amber-400'
-            : 'bg-red-500/10 border border-red-500/30 text-red-400'
-        }`}>
-          <span className={`w-1.5 h-1.5 rounded-full ${
-            realtimeStatus === 'connected' ? 'bg-emerald-400' :
-            realtimeStatus === 'connecting' ? 'bg-amber-400 animate-pulse' : 'bg-red-400'
-          }`} />
+              ? 'bg-amber-400/10 border border-amber-400/30 text-amber-400'
+              : 'bg-red-500/10 border border-red-500/30 text-red-400'
+          }`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${realtimeStatus === 'connected' ? 'bg-emerald-400' :
+              realtimeStatus === 'connecting' ? 'bg-amber-400 animate-pulse' : 'bg-red-400'
+            }`} />
           {realtimeStatus === 'connected' ? 'WS Live' :
-           realtimeStatus === 'connecting' ? 'Connecting...' : 'WS Off'}
+            realtimeStatus === 'connecting' ? 'Connecting...' : 'WS Off'}
         </div>
       </div>
 
       {/* Right Tools */}
       <div className="flex items-center gap-6">
+        {/* Trading Mode Toggle — Live vs Paper (Virtual Balance) */}
+        <div
+          role="tablist"
+          aria-label="Trading mode"
+          className="flex items-center p-0.5 rounded-xl bg-pitch-surface border border-pitch-border"
+        >
+          <button
+            role="tab"
+            aria-selected={!isPaper}
+            onClick={() => setTradingMode('live')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${!isPaper
+                ? 'bg-emerald-profit/15 text-emerald-profit shadow-sm'
+                : 'text-zinc-500 hover:text-zinc-300'
+              }`}
+          >
+            <span className={`w-1.5 h-1.5 rounded-full ${!isPaper ? 'bg-emerald-profit' : 'bg-zinc-600'}`} />
+            Live Trading
+          </button>
+          <button
+            role="tab"
+            aria-selected={isPaper}
+            onClick={() => setTradingMode('paper')}
+            title="Simulated trading with a $100 virtual balance — no real money, no API key required"
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${isPaper
+                ? 'bg-amber-400/15 text-amber-400 shadow-sm'
+                : 'text-zinc-500 hover:text-zinc-300'
+              }`}
+          >
+            <FlaskConical className="w-3 h-3" />
+            Paper Trading
+          </button>
+        </div>
+
         {/* Exchange Selector Dropdown */}
         <div className="relative">
           <button
@@ -80,11 +123,10 @@ export const Header: React.FC<HeaderProps> = ({
                   setSelectedExchange('binance');
                   setIsDropdownOpen(false);
                 }}
-                className={`w-full text-left px-3 py-2 text-xs font-medium rounded-lg flex items-center justify-between ${
-                  selectedExchange === 'binance'
+                className={`w-full text-left px-3 py-2 text-xs font-medium rounded-lg flex items-center justify-between ${selectedExchange === 'binance'
                     ? 'bg-electric-blue/15 text-electric-blue font-bold'
                     : 'text-zinc-300 hover:bg-pitch-surface'
-                }`}
+                  }`}
               >
                 <span>Binance Spot</span>
                 {selectedExchange === 'binance' && <span className="w-1.5 h-1.5 rounded-full bg-electric-blue"></span>}
@@ -94,11 +136,10 @@ export const Header: React.FC<HeaderProps> = ({
                   setSelectedExchange('bybit');
                   setIsDropdownOpen(false);
                 }}
-                className={`w-full text-left px-3 py-2 text-xs font-medium rounded-lg flex items-center justify-between ${
-                  selectedExchange === 'bybit'
+                className={`w-full text-left px-3 py-2 text-xs font-medium rounded-lg flex items-center justify-between ${selectedExchange === 'bybit'
                     ? 'bg-electric-blue/15 text-electric-blue font-bold'
                     : 'text-zinc-300 hover:bg-pitch-surface'
-                }`}
+                  }`}
               >
                 <span>Bybit Spot</span>
                 {selectedExchange === 'bybit' && <span className="w-1.5 h-1.5 rounded-full bg-electric-blue"></span>}
@@ -109,12 +150,12 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* Global Balance */}
         <div className="flex items-center gap-3 px-4 py-1.5 rounded-xl bg-pitch-surface border border-pitch-border">
-          <div className="p-1.5 rounded-lg bg-electric-blue/15 text-electric-blue">
+          <div className={`p-1.5 rounded-lg ${isPaper ? 'bg-amber-400/15 text-amber-400' : 'bg-electric-blue/15 text-electric-blue'}`}>
             <Wallet className="w-4 h-4" />
           </div>
           <div>
             <div className="text-[10px] uppercase font-bold text-zinc-500 tracking-wider leading-none">
-              Total Capital
+              {isPaper ? 'Virtual Balance' : 'Total Capital'}
             </div>
             <div className="text-sm font-extrabold text-white leading-tight font-mono">
               {totalCapital === null || totalCapital === undefined ? (

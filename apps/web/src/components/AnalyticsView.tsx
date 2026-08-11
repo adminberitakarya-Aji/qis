@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState, useCallback } from 'react';
 import { BarChart3, Award, RefreshCw, Download, WifiOff } from 'lucide-react';
-import type { AnalyticsSummary } from '@/lib/api';
+import type { AnalyticsSummary, TradingMode } from '@/lib/api';
 import { getAnalyticsSummary } from '@/lib/api';
 
 // -----------------------------------------------------------------------
@@ -23,19 +23,27 @@ function pnlColor(val: number) {
   return val >= 0 ? 'text-emerald-400' : 'text-red-400';
 }
 
-export const AnalyticsView: React.FC = () => {
+interface AnalyticsViewProps {
+  tradingMode: TradingMode;
+}
+
+export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ tradingMode }) => {
   const [analytics, setAnalytics] = useState<AnalyticsSummary | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isLive, setIsLive] = useState(false);
 
   const fetchData = useCallback(async () => {
-    const data = await getAnalyticsSummary();
+    setIsLoading(true);
+    const data = await getAnalyticsSummary(tradingMode);
     if (data) {
       setAnalytics(data);
       setIsLive(true);
+    } else {
+      setAnalytics(null);
+      setIsLive(false);
     }
     setIsLoading(false);
-  }, []);
+  }, [tradingMode]);
 
   useEffect(() => {
     void fetchData();

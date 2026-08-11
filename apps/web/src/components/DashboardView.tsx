@@ -13,11 +13,12 @@ import {
   Wifi,
   WifiOff,
 } from 'lucide-react';
-import type { PairRecommendation, PortfolioSummary } from '@/lib/api';
+import type { PairRecommendation, PortfolioSummary, TradingMode } from '@/lib/api';
 import { getTopPairRecommendations, getPortfolioSummary } from '@/lib/api';
 
 interface DashboardViewProps {
   onNavigateToStrategy: (pair?: string) => void;
+  tradingMode: TradingMode;
 }
 
 // ---------------------------------------------------------------------------
@@ -95,7 +96,8 @@ function scoreColor(score: number): string {
 // ---------------------------------------------------------------------------
 // Helpers — format portfolio summary into metric card shape
 // ---------------------------------------------------------------------------
-function buildMetrics(s: PortfolioSummary) {
+function buildMetrics(s: PortfolioSummary, mode: TradingMode) {
+  const isPaper = mode === 'paper';
   const pairsLabel =
     s.activeStrategyPairs && s.activeStrategyPairs.length > 0
       ? s.activeStrategyPairs.join(', ')
@@ -103,13 +105,14 @@ function buildMetrics(s: PortfolioSummary) {
   const winCount = Math.round((s.winRate / 100) * s.totalRoundsCompleted);
   const lossCount = s.totalRoundsCompleted - winCount;
   const pnlSign = s.realizedPnl24hUsdt >= 0 ? '+' : '';
+  const capitalValue = isPaper ? s.virtualWalletBalance ?? s.totalCapitalUsdt : s.totalCapitalUsdt;
 
   return [
     {
-      title: 'Total Portfolio Capital',
-      value: `$${s.totalCapitalUsdt.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-      subtitle: 'Capital in active strategies (USDT)',
-      change: s.activeStrategies > 0 ? 'LIVE' : 'IDLE',
+      title: isPaper ? 'Virtual Wallet Balance' : 'Total Portfolio Capital',
+      value: `$${capitalValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+      subtitle: isPaper ? 'Simulated balance — no real money' : 'Capital in active strategies (USDT)',
+      change: s.activeStrategies > 0 ? (isPaper ? 'SIMULATING' : 'LIVE') : 'IDLE',
       isPositive: s.activeStrategies > 0,
     },
     {
@@ -136,7 +139,8 @@ function buildMetrics(s: PortfolioSummary) {
   ];
 }
 
-export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateToStrategy }) => {
+export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateToStrategy, tradingMode }) => {
+  const isPaper = tradingMode === 'paper';
   const [pairs, setPairs] = useState<PairRecommendation[]>(FALLBACK_PAIRS);
   const [isLoading, setIsLoading] = useState(true);
   const [isLive, setIsLive] = useState(false);
@@ -148,11 +152,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateToStrate
 
   const fetchPortfolioSummary = useCallback(async () => {
     setIsPortfolioLoading(true);
-    const result = await getPortfolioSummary();
+    const result = await getPortfolioSummary(tradingMode);
     setPortfolioSummary(result);
     setIsPortfolioLoading(false);
-  }, []);
+  }, [tradingMode]);
 
+  // Re-fetch immediately whenever Trading Mode flips (Live ↔ Paper are
+  // separate tables/balances, so stale data from the other mode must not
+  // linger on screen while the new fetch is in flight).
   useEffect(() => {
     void fetchPortfolioSummary();
   }, [fetchPortfolioSummary]);
@@ -166,7 +173,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateToStrate
   }, [fetchPortfolioSummary]);
 
   // Derived metric cards (empty array while loading)
-  const dashboardMetrics = portfolioSummary ? buildMetrics(portfolioSummary) : [];
+  const dashboardMetrics = portfolioSummary ? buildMetrics(portfolioSummary, tradingMode) : [];
 
   const fetchPairs = useCallback(async () => {
     setIsLoading(true);
@@ -205,6 +212,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateToStrate
             <span className="px-2.5 py-0.5 rounded-full bg-neon-purple/20 border border-neon-purple/30 text-neon-purple text-xs font-semibold flex items-center gap-1.5">
               <Sparkles className="w-3.5 h-3.5" /> AI Strategy Planner
             </span>
+            {isPaper && (
+              <span className="px-2.5 py-0.5 rounded-full bg-amber-400/15 border border-amber-400/30 text-amber-400 text-xs font-semibold">
+                Paper Mode — $100 Virtual Balance
+              </span>
+            )}
             {isLive ? (
               <span className="text-xs text-emerald-profit flex items-center gap-1 font-semibold">
                 <Wifi className="w-3 h-3" /> Live AI Data
@@ -237,59 +249,58 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateToStrate
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         {isPortfolioLoading
           ? // Skeleton cards while loading
-            Array.from({ length: 4 }).map((_, idx) => (
-              <div
-                key={idx}
-                className="p-5 rounded-2xl bg-pitch-card border border-pitch-border animate-pulse"
-              >
-                <div className="flex items-center justify-between mb-3">
-                  <div className="h-3 w-28 rounded bg-pitch-surface" />
-                  <div className="h-4 w-14 rounded bg-pitch-surface" />
-                </div>
-                <div className="h-7 w-32 rounded bg-pitch-surface mb-2" />
-                <div className="h-3 w-40 rounded bg-pitch-surface" />
+          Array.from({ length: 4 }).map((_, idx) => (
+            <div
+              key={idx}
+              className="p-5 rounded-2xl bg-pitch-card border border-pitch-border animate-pulse"
+            >
+              <div className="flex items-center justify-between mb-3">
+                <div className="h-3 w-28 rounded bg-pitch-surface" />
+                <div className="h-4 w-14 rounded bg-pitch-surface" />
               </div>
-            ))
+              <div className="h-7 w-32 rounded bg-pitch-surface mb-2" />
+              <div className="h-3 w-40 rounded bg-pitch-surface" />
+            </div>
+          ))
           : dashboardMetrics.length > 0
             ? dashboardMetrics.map((m, idx) => (
-                <div
-                  key={idx}
-                  className="p-5 rounded-2xl bg-pitch-card border border-pitch-border hover:border-pitch-borderLight transition-all group"
-                >
-                  <div className="flex items-center justify-between text-xs font-medium text-zinc-400 mb-3">
-                    <span>{m.title}</span>
-                    <span
-                      className={`px-2 py-0.5 rounded font-semibold ${
-                        m.isPositive
-                          ? 'bg-emerald-profit/15 text-emerald-profit'
-                          : 'bg-red-500/15 text-red-400'
+              <div
+                key={idx}
+                className="p-5 rounded-2xl bg-pitch-card border border-pitch-border hover:border-pitch-borderLight transition-all group"
+              >
+                <div className="flex items-center justify-between text-xs font-medium text-zinc-400 mb-3">
+                  <span>{m.title}</span>
+                  <span
+                    className={`px-2 py-0.5 rounded font-semibold ${m.isPositive
+                        ? 'bg-emerald-profit/15 text-emerald-profit'
+                        : 'bg-red-500/15 text-red-400'
                       }`}
-                    >
-                      {m.change}
-                    </span>
-                  </div>
-                  <div className="text-2xl font-black text-white font-mono tracking-tight mb-1 group-hover:text-electric-blue transition-colors">
-                    {m.value}
-                  </div>
-                  <div className="text-[11px] text-zinc-500 font-medium">{m.subtitle}</div>
+                  >
+                    {m.change}
+                  </span>
                 </div>
-              ))
+                <div className="text-2xl font-black text-white font-mono tracking-tight mb-1 group-hover:text-electric-blue transition-colors">
+                  {m.value}
+                </div>
+                <div className="text-[11px] text-zinc-500 font-medium">{m.subtitle}</div>
+              </div>
+            ))
             : // API offline — show placeholder cards
-              [
-                'Total Portfolio Capital',
-                'Active Grid Strategies',
-                '24h Realized Profit',
-                'Strategy Win Rate',
-              ].map((title, idx) => (
-                <div
-                  key={idx}
-                  className="p-5 rounded-2xl bg-pitch-card border border-pitch-border border-dashed opacity-60"
-                >
-                  <div className="text-xs font-medium text-zinc-400 mb-3">{title}</div>
-                  <div className="text-2xl font-black text-zinc-600 font-mono tracking-tight mb-1">--</div>
-                  <div className="text-[11px] text-zinc-600">API unavailable</div>
-                </div>
-              ))}
+            [
+              'Total Portfolio Capital',
+              'Active Grid Strategies',
+              '24h Realized Profit',
+              'Strategy Win Rate',
+            ].map((title, idx) => (
+              <div
+                key={idx}
+                className="p-5 rounded-2xl bg-pitch-card border border-pitch-border border-dashed opacity-60"
+              >
+                <div className="text-xs font-medium text-zinc-400 mb-3">{title}</div>
+                <div className="text-2xl font-black text-zinc-600 font-mono tracking-tight mb-1">--</div>
+                <div className="text-[11px] text-zinc-600">API unavailable</div>
+              </div>
+            ))}
       </div>
 
       {/* Main Grid: AI Recommendations + Live Grid Monitor */}
@@ -413,7 +424,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateToStrate
                 <Layers className="w-5 h-5" />
               </div>
               <div>
-                <h3 className="text-lg font-extrabold text-white">Live Grid Monitor</h3>
+                <h3 className="text-lg font-extrabold text-white">
+                  {isPaper ? 'Paper Grid Monitor' : 'Live Grid Monitor'}
+                </h3>
                 <p className="text-xs text-zinc-400">
                   {portfolioSummary && portfolioSummary.activeStrategyPairs.length > 0
                     ? portfolioSummary.activeStrategyPairs.join(', ')
@@ -443,7 +456,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateToStrate
               /* Active strategies — show live grid */
               <>
                 <div className="flex items-center justify-between text-xs">
-                  <span className="font-mono text-zinc-300">Live Price via Binance WS</span>
+                  <span className="font-mono text-zinc-300">
+                    {isPaper ? 'Live Price (Simulated Fills)' : 'Live Price via Binance WS'}
+                  </span>
                   <span className="text-emerald-profit font-semibold flex items-center gap-1">
                     <CheckCircle2 className="w-3.5 h-3.5" />
                     {portfolioSummary.activeStrategies} Active {portfolioSummary.activeStrategies === 1 ? 'Strategy' : 'Strategies'}
@@ -482,9 +497,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateToStrate
                   <div className="p-3 rounded-xl bg-pitch-surface border border-pitch-border">
                     <div className="text-zinc-500 font-medium">24h Realized PnL</div>
                     <div
-                      className={`text-sm font-bold font-mono ${
-                        portfolioSummary.realizedPnl24hUsdt >= 0 ? 'text-emerald-profit' : 'text-red-400'
-                      }`}
+                      className={`text-sm font-bold font-mono ${portfolioSummary.realizedPnl24hUsdt >= 0 ? 'text-emerald-profit' : 'text-red-400'
+                        }`}
                     >
                       {portfolioSummary.realizedPnl24hUsdt >= 0 ? '+' : ''}${Math.abs(portfolioSummary.realizedPnl24hUsdt).toFixed(2)}
                     </div>
@@ -500,7 +514,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateToStrate
                 {/* Binance WS Status */}
                 <div className="flex items-center gap-2 text-[10px] text-zinc-500 pt-1">
                   <div className="w-1.5 h-1.5 rounded-full bg-emerald-profit animate-pulse"></div>
-                  Binance WebSocket Worker monitoring live grid levels
+                  {isPaper
+                    ? 'Worker monitoring live price — orders simulated, no real funds'
+                    : 'Binance WebSocket Worker monitoring live grid levels'}
                 </div>
               </>
             ) : (
@@ -512,7 +528,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigateToStrate
                 <div className="space-y-1.5">
                   <p className="text-sm font-semibold text-zinc-300">No Active Strategies</p>
                   <p className="text-[11px] text-zinc-500 max-w-[200px] leading-relaxed">
-                    Build a grid strategy to start monitoring live price vs. grid levels here.
+                    {isPaper
+                      ? 'Build a strategy and run it in Paper mode to validate AI performance with a $100 virtual balance — no API key needed.'
+                      : 'Build a grid strategy to start monitoring live price vs. grid levels here.'}
                   </p>
                 </div>
                 <button

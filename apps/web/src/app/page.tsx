@@ -16,6 +16,9 @@ import { realtimeClient } from '@/lib/realtime';
 import type { User } from '@/lib/auth';
 import { getStoredUser, clearAuth, logout, refreshTokens } from '@/lib/auth';
 import { getPortfolioSummary } from '@/lib/api';
+import type { TradingMode } from '@/lib/api';
+
+const TRADING_MODE_STORAGE_KEY = 'qis-trading-mode';
 
 const PAGE_TITLES: Record<NavTab, string> = {
   dashboard: 'Dashboard',
@@ -38,6 +41,18 @@ export default function Home() {
   const [realtimeStatus, setRealtimeStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
   const [portfolioCapital, setPortfolioCapital] = useState<number | null>(null);
 
+  // Global Trading Mode — Live (real exchange) vs Paper (virtual $100 balance).
+  // Persisted so a refresh doesn't silently drop the trader back into Live.
+  const [tradingMode, setTradingModeState] = useState<TradingMode>('live');
+  useEffect(() => {
+    const stored = window.localStorage.getItem(TRADING_MODE_STORAGE_KEY);
+    if (stored === 'live' || stored === 'paper') setTradingModeState(stored);
+  }, []);
+  const setTradingMode = (mode: TradingMode) => {
+    setTradingModeState(mode);
+    window.localStorage.setItem(TRADING_MODE_STORAGE_KEY, mode);
+  };
+
   // Check authentication state on mount
   useEffect(() => {
     const storedUser = getStoredUser();
@@ -56,17 +71,21 @@ export default function Home() {
     }
   }, []);
 
-  // Fetch real portfolio capital for the header badge
+  // Fetch portfolio capital for the header badge — re-fetches whenever
+  // Trading Mode flips, since Live and Paper are separate balances/tables.
   useEffect(() => {
     if (!authenticated) return;
     const fetchCapital = async () => {
-      const summary = await getPortfolioSummary();
-      if (summary) setPortfolioCapital(summary.totalCapitalUsdt);
+      const summary = await getPortfolioSummary(tradingMode);
+      if (!summary) return;
+      setPortfolioCapital(
+        tradingMode === 'paper' ? summary.virtualWalletBalance ?? summary.totalCapitalUsdt : summary.totalCapitalUsdt,
+      );
     };
     void fetchCapital();
     const interval = setInterval(() => { void fetchCapital(); }, 60_000);
     return () => clearInterval(interval);
-  }, [authenticated]);
+  }, [authenticated, tradingMode]);
 
   // Connect to WebSocket when authenticated and listen for real-time events
   // Per Real-Time Data Rules (BUSINESS_RULES_ADDENDUM.md), order status,
@@ -119,13 +138,14 @@ export default function Home() {
   const renderContent = () => {
     switch (activeTab) {
       case 'dashboard':
-        return <DashboardView onNavigateToStrategy={handleNavigateToStrategy} />;
+        return <DashboardView onNavigateToStrategy={handleNavigateToStrategy} tradingMode={tradingMode} />;
       case 'ai-strategy':
         return (
           <AiStrategyView
             key={strategyPair}
             initialPair={strategyPair ?? 'BTC/USDT'}
             onStrategyApproved={handleStrategyApproved}
+            tradingMode={tradingMode}
           />
         );
       case 'trading':
@@ -133,7 +153,7 @@ export default function Home() {
       case 'portfolio':
         return <PortfolioView />;
       case 'analytics':
-        return <AnalyticsView />;
+        return <AnalyticsView tradingMode={tradingMode} />;
       case 'exchanges':
         return <ExchangesView />;
       case 'settings':
@@ -192,6 +212,8 @@ export default function Home() {
           title={PAGE_TITLES[activeTab]}
           selectedExchange={selectedExchange}
           setSelectedExchange={setSelectedExchange}
+          tradingMode={tradingMode}
+          setTradingMode={setTradingMode}
           realtimeStatus={realtimeStatus}
           user={user}
           onLogout={() => void handleLogout()}

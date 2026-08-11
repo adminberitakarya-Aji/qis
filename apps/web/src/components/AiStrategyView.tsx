@@ -12,7 +12,8 @@ import {
   Sliders,
   DollarSign,
 } from 'lucide-react';
-import { buildStrategy, runSimulation } from '@/lib/api';
+import { buildStrategy, runSimulation, startPaperExecution } from '@/lib/api';
+import type { TradingMode } from '@/lib/api';
 
 interface BlueprintSection {
   index: number;
@@ -47,12 +48,17 @@ interface Blueprint {
 interface AiStrategyViewProps {
   initialPair?: string;
   onStrategyApproved: () => void;
+  /** Determines whether approval starts a real exchange execution or a
+   *  simulated $100 paper strategy. Comes from the global header toggle. */
+  tradingMode: TradingMode;
 }
 
 export const AiStrategyView: React.FC<AiStrategyViewProps> = ({
   initialPair = 'BTC/USDT',
   onStrategyApproved,
+  tradingMode,
 }) => {
+  const isPaper = tradingMode === 'paper';
   // User Input States
   const [pair, setPair] = useState(initialPair);
   const [exchange, setExchange] = useState<'binance' | 'bybit'>('binance');
@@ -143,8 +149,28 @@ export const AiStrategyView: React.FC<AiStrategyViewProps> = ({
     }, 1000);
   };
 
-  const handleApproveStrategy = () => {
+  const handleApproveStrategy = async () => {
+    if (!blueprint) return;
     setIsExecuting(true);
+    setApiError(null);
+
+    if (isPaper) {
+      // Paper mode: no API key / exchange account needed — starts immediately
+      // against a $100 virtual balance (see paper_trading.md).
+      const result = await startPaperExecution(blueprint.id, exchange);
+      setIsExecuting(false);
+      if (result) {
+        onStrategyApproved();
+      } else {
+        setApiError('Could not start paper trading — backend unreachable or blueprint expired.');
+      }
+      return;
+    }
+
+    // Live mode: real execution requires a connected Exchange Account with
+    // API keys (see Exchanges page). That account-selection flow isn't wired
+    // into this screen yet, so we keep the existing local transition here
+    // rather than silently placing a live order without one.
     setTimeout(() => {
       setIsExecuting(false);
       onStrategyApproved();
@@ -192,11 +218,10 @@ export const AiStrategyView: React.FC<AiStrategyViewProps> = ({
                   key={ex}
                   type="button"
                   onClick={() => setExchange(ex)}
-                  className={`py-2 rounded-xl text-xs font-bold font-mono transition-all border capitalize ${
-                    exchange === ex
+                  className={`py-2 rounded-xl text-xs font-bold font-mono transition-all border capitalize ${exchange === ex
                       ? 'bg-electric-blue/20 border-electric-blue text-electric-blue'
                       : 'bg-pitch-surface border-pitch-border text-zinc-400 hover:text-white'
-                  }`}
+                    }`}
                 >
                   {ex.charAt(0).toUpperCase() + ex.slice(1)}
                 </button>
@@ -258,11 +283,10 @@ export const AiStrategyView: React.FC<AiStrategyViewProps> = ({
                   key={num}
                   type="button"
                   onClick={() => handleSectionCountChange(num as 1 | 2 | 3)}
-                  className={`py-2.5 rounded-xl text-xs font-bold font-mono transition-all border ${
-                    sectionCount === num
+                  className={`py-2.5 rounded-xl text-xs font-bold font-mono transition-all border ${sectionCount === num
                       ? 'bg-electric-blue/20 border-electric-blue text-electric-blue'
                       : 'bg-pitch-surface border-pitch-border text-zinc-400 hover:text-white'
-                  }`}
+                    }`}
                 >
                   {num} {num === 1 ? 'Section' : 'Sections'}
                 </button>
@@ -446,29 +470,40 @@ export const AiStrategyView: React.FC<AiStrategyViewProps> = ({
               </div>
 
               {/* User Approval Decision Box */}
-              <div className="p-6 rounded-2xl bg-emerald-950/20 border border-emerald-500/30 flex items-center justify-between glow-emerald">
+              <div
+                className={`p-6 rounded-2xl border flex items-center justify-between ${isPaper
+                    ? 'bg-amber-950/20 border-amber-500/30'
+                    : 'bg-emerald-950/20 border-emerald-500/30 glow-emerald'
+                  }`}
+              >
                 <div className="flex items-center gap-3">
-                  <div className="p-2 rounded-lg bg-emerald-500/20 text-emerald-400">
+                  <div className={`p-2 rounded-lg ${isPaper ? 'bg-amber-500/20 text-amber-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
                     <CheckCircle2 className="w-5 h-5" />
                   </div>
                   <div>
                     <h4 className="text-sm font-bold text-white">Trader Approval Required</h4>
                     <p className="text-xs text-zinc-400">
-                      AI recommended. System will execute deterministically upon approval.
+                      {isPaper
+                        ? 'Paper mode — simulated with $100 virtual balance, no API key or real funds used.'
+                        : 'AI recommended. System will execute deterministically upon approval.'}
                     </p>
+                    {apiError && <p className="text-xs text-red-400 mt-1">{apiError}</p>}
                   </div>
                 </div>
 
                 <button
-                  onClick={handleApproveStrategy}
+                  onClick={() => void handleApproveStrategy()}
                   disabled={isExecuting}
-                  className="px-6 py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-pitch-bg font-extrabold text-sm transition-all flex items-center gap-2 shadow-lg shadow-emerald-500/20"
+                  className={`px-6 py-3 rounded-xl font-extrabold text-sm transition-all flex items-center gap-2 shadow-lg ${isPaper
+                      ? 'bg-amber-400 hover:bg-amber-300 text-pitch-bg shadow-amber-500/20'
+                      : 'bg-emerald-500 hover:bg-emerald-400 text-pitch-bg shadow-emerald-500/20'
+                    }`}
                 >
                   {isExecuting ? (
-                    'Starting Execution...'
+                    isPaper ? 'Starting Paper Trading...' : 'Starting Execution...'
                   ) : (
                     <>
-                      Approve & Start Live Trading
+                      {isPaper ? 'Approve & Start Paper Trading' : 'Approve & Start Live Trading'}
                       <ArrowRight className="w-4 h-4" />
                     </>
                   )}
