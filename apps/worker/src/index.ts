@@ -21,8 +21,19 @@ const logger = createServiceLogger('qis-worker');
 
 const API_BASE_URL = process.env.API_URL || 'http://localhost:3001/api/v1';
 const WORKER_SECRET = process.env.WORKER_SECRET || 'qis-internal-worker-secret-dev';
-const BINANCE_WS_BASE = 'wss://stream.binance.com:9443/ws';
-const BYBIT_WS_BASE = 'wss://stream.bybit.com/v5/public/spot';
+// stream.binance.com:9443 and stream.bybit.com are both unreachable from
+// this VPS's network (confirmed: WebSocket connect ECONNREFUSED on
+// Binance; same class of block already confirmed for both exchanges'
+// default REST domains — see packages/providers/exchange/src/index.ts).
+// Both exchanges publish official mirror domains for exactly this case:
+// - Binance: wss://data-stream.binance.vision — market-data-only, no auth
+//   needed, same convention as the data-api.binance.vision REST mirror
+//   already used elsewhere in this codebase (ai-engine, ai-service).
+// - Bybit: wss://stream.bytick.com — Bybit's documented global alternate
+//   domain, full mirror (same one already used for the REST client in
+//   packages/providers/exchange).
+const BINANCE_WS_BASE = 'wss://data-stream.binance.vision/ws';
+const BYBIT_WS_BASE = 'wss://stream.bytick.com/v5/public/spot';
 const RECONNECT_DELAY_MS = 3000;
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const MAX_RECONNECT_ATTEMPTS = 10; // Alert after this many failed reconnection attempts
@@ -494,7 +505,7 @@ function subscribeToBinanceSymbol(binanceSymbol: string, strategies: ActiveStrat
             'critical'
           );
         }
-        
+
         setTimeout(connect, delay);
       }
     });
@@ -627,7 +638,7 @@ function subscribeToBybitSymbol(bybitSymbol: string, strategies: ActiveStrategy[
             'critical'
           );
         }
-        
+
         setTimeout(connect, delay);
       }
     });
