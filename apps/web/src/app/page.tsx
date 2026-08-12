@@ -15,7 +15,7 @@ import { LandingPage } from '@/components/LandingPage';
 import { realtimeClient } from '@/lib/realtime';
 import type { User } from '@/lib/auth';
 import { getStoredUser, clearAuth, logout, refreshTokens } from '@/lib/auth';
-import { getPortfolioSummary } from '@/lib/api';
+import { getPortfolioSummary, getPaperBalance } from '@/lib/api';
 import type { TradingMode } from '@/lib/api';
 
 const TRADING_MODE_STORAGE_KEY = 'qis-trading-mode';
@@ -71,21 +71,45 @@ export default function Home() {
     }
   }, []);
 
-  // Fetch portfolio capital for the header badge — re-fetches whenever
-  // Trading Mode flips, since Live and Paper are separate balances/tables.
+  // Clear the previous exchange/mode's number immediately on switch so the
+  // badge shows its loading skeleton rather than flashing a stale value
+  // that belongs to the exchange/mode the user just navigated away from.
+  useEffect(() => {
+    setPortfolioCapital(null);
+  }, [tradingMode, selectedExchange]);
+
+  // Fetch capital for the header badge.
+  //
+  // Paper mode: the badge sits right next to the exchange selector, so it
+  // must show THAT exchange's own $-virtual balance (each exchange has its
+  // own separate PaperAccount, starting at $100) — not the sum across every
+  // exchange. Previously this always called getPortfolioSummary('paper'),
+  // which returns virtualWalletBalance summed across all paper accounts,
+  // so the badge showed the same combined number regardless of which
+  // exchange was selected. Re-fetches whenever the exchange selection
+  // changes, not just when Trading Mode flips.
+  //
+  // Live mode: unchanged — 'Total Capital' there reflects capital across
+  // active live strategies, which isn't scoped to a single exchange the
+  // same way a paper account is (a live strategy draws from a connected
+  // Exchange Account, not a flat per-exchange pool).
   useEffect(() => {
     if (!authenticated) return;
     const fetchCapital = async () => {
-      const summary = await getPortfolioSummary(tradingMode);
+      if (tradingMode === 'paper') {
+        const balance = await getPaperBalance(selectedExchange);
+        if (!balance) return;
+        setPortfolioCapital(balance.virtualBalance);
+        return;
+      }
+      const summary = await getPortfolioSummary('live');
       if (!summary) return;
-      setPortfolioCapital(
-        tradingMode === 'paper' ? summary.virtualWalletBalance ?? summary.totalCapitalUsdt : summary.totalCapitalUsdt,
-      );
+      setPortfolioCapital(summary.totalCapitalUsdt);
     };
     void fetchCapital();
     const interval = setInterval(() => { void fetchCapital(); }, 60_000);
     return () => clearInterval(interval);
-  }, [authenticated, tradingMode]);
+  }, [authenticated, tradingMode, selectedExchange]);
 
   // Connect to WebSocket when authenticated and listen for real-time events
   // Per Real-Time Data Rules (BUSINESS_RULES_ADDENDUM.md), order status,
