@@ -56,6 +56,11 @@ interface DisplayStrategy {
   capital: number;
   sectionCount: number;
   totalGridLevels: number;
+  /** Real backend status. Live path always 'active' (API already filters
+   *  to active-only). Paper path carries the true status through so the
+   *  RUNNING/STOPPED badge and Stop button reflect reality even when we
+   *  fall back to showing the most-recently-stopped strategy. */
+  status: 'active' | 'stopped';
 }
 
 interface DisplayOrder {
@@ -102,6 +107,10 @@ function pickActivePaperStrategy(
     capital: target.capital,
     sectionCount: 0,
     totalGridLevels: target.totalOrders,
+    // Was previously discarded here — the caller had no way to tell a
+    // truly-active strategy from a stopped one we fell back to showing,
+    // and ended up hardcoding 'active' regardless.
+    status: target.status === 'active' ? 'active' : 'stopped',
   };
 }
 
@@ -185,7 +194,11 @@ export const TradingView: React.FC<TradingViewProps> = ({ tradingMode, initialEx
       }
 
       setStrategy(picked);
-      setStrategyStatus(picked.id ? 'active' : 'stopped');
+      // Was: setStrategyStatus(picked.id ? 'active' : 'stopped') — picked.id
+      // is truthy for any real strategy object, so that check was always
+      // 'active' regardless of whether the strategy had actually been
+      // stopped. Use the real status carried through by pickActivePaperStrategy.
+      setStrategyStatus(picked.status);
 
       const paperOrders = await getPaperStrategyOrders(picked.id);
       if (paperOrders) {
@@ -242,6 +255,9 @@ export const TradingView: React.FC<TradingViewProps> = ({ tradingMode, initialEx
       capital: raw.capital,
       sectionCount: (raw as unknown as { sectionCount?: number }).sectionCount ?? 0,
       totalGridLevels: (raw as unknown as { totalGridLevels?: number }).totalGridLevels ?? 0,
+      // Always 'active' here — getActiveStrategies() already filters to
+      // status='active' server-side, so anything returned is genuinely running.
+      status: 'active',
     };
     setStrategy(activeStrategy);
     setStrategyStatus('active');
@@ -378,7 +394,7 @@ export const TradingView: React.FC<TradingViewProps> = ({ tradingMode, initialEx
           </div>
         </div>
 
-        {/* Emergency Stop Button */}
+        {/* Stop Strategy Button */}
         {strategyStatus === 'active' ? (
           <button
             onClick={() => void handleStopStrategy()}
@@ -386,7 +402,7 @@ export const TradingView: React.FC<TradingViewProps> = ({ tradingMode, initialEx
             className="px-5 py-3 rounded-xl bg-red-950/80 hover:bg-red-900 text-red-400 border border-red-800/80 font-bold text-xs shadow-lg transition-all flex items-center gap-2"
           >
             <OctagonX className="w-4 h-4" />
-            <span>{isStopping ? 'Canceling Orders...' : 'Emergency Stop Strategy'}</span>
+            <span>{isStopping ? 'Canceling Orders...' : 'Stop Strategy'}</span>
           </button>
         ) : (
           <div className="text-xs font-semibold text-zinc-500">Strategy Stopped</div>
