@@ -30,6 +30,10 @@ export default {
           profit: '#10b981',
           glow: 'rgba(16, 185, 129, 0.2)',
         },
+        crimson: {
+          loss: '#ef4444',
+          glow: 'rgba(239, 68, 68, 0.2)',
+        },
       },
       fontFamily: {
         sans: ['Inter', 'system-ui', 'sans-serif'],

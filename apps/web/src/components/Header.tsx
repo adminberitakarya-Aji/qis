@@ -47,23 +47,25 @@ export const Header: React.FC<HeaderProps> = ({
       <div className="flex items-center gap-4">
         <h2 className="text-xl font-bold text-white tracking-tight">{title}</h2>
         <div
-          className={`flex items-center gap-2 px-2.5 py-1 rounded-full text-xs font-semibold ${isPaper
-              ? 'bg-amber-400/10 border border-amber-400/20 text-amber-400'
-              : 'bg-emerald-profit/10 border border-emerald-profit/20 text-emerald-profit'
+          className={`flex items-center gap-2 px-2.5 py-1 rounded-full text-xs font-semibold border ${isPaper
+            ? 'bg-pitch-hover/60 border-pitch-border text-zinc-400'
+            : 'bg-emerald-profit/10 border-emerald-profit/20 text-emerald-profit'
             }`}
         >
-          <Activity className="w-3.5 h-3.5 animate-pulse" />
+          {isPaper ? <FlaskConical className="w-3.5 h-3.5" /> : <Activity className="w-3.5 h-3.5 animate-pulse" />}
           <span>{isPaper ? 'Paper Execution Engine' : 'Live Execution Engine'}</span>
         </div>
-        {/* Realtime Connection Status */}
+        {/* Realtime Connection Status — a genuine three-state health signal
+            (connected/connecting/disconnected), so red/amber/emerald here
+            follows the same convention as any uptime or CI status badge. */}
         <div className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-mono font-bold ${realtimeStatus === 'connected'
-            ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400'
-            : realtimeStatus === 'connecting'
-              ? 'bg-amber-400/10 border border-amber-400/30 text-amber-400'
-              : 'bg-red-500/10 border border-red-500/30 text-red-400'
+          ? 'bg-emerald-profit/10 border border-emerald-profit/30 text-emerald-profit'
+          : realtimeStatus === 'connecting'
+            ? 'bg-amber-400/10 border border-amber-400/30 text-amber-400'
+            : 'bg-crimson-loss/10 border border-crimson-loss/30 text-crimson-loss'
           }`}>
-          <span className={`w-1.5 h-1.5 rounded-full ${realtimeStatus === 'connected' ? 'bg-emerald-400' :
-              realtimeStatus === 'connecting' ? 'bg-amber-400 animate-pulse' : 'bg-red-400'
+          <span className={`w-1.5 h-1.5 rounded-full ${realtimeStatus === 'connected' ? 'bg-emerald-profit' :
+            realtimeStatus === 'connecting' ? 'bg-amber-400 animate-pulse' : 'bg-crimson-loss'
             }`} />
           {realtimeStatus === 'connected' ? 'WS Live' :
             realtimeStatus === 'connecting' ? 'Connecting...' : 'WS Off'}
@@ -83,11 +85,11 @@ export const Header: React.FC<HeaderProps> = ({
             aria-selected={!isPaper}
             onClick={() => setTradingMode('live')}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${!isPaper
-                ? 'bg-emerald-profit/15 text-emerald-profit shadow-sm'
-                : 'text-zinc-500 hover:text-zinc-300'
+              ? 'bg-electric-blue/15 text-electric-blue shadow-sm'
+              : 'text-zinc-500 hover:text-zinc-300'
               }`}
           >
-            <span className={`w-1.5 h-1.5 rounded-full ${!isPaper ? 'bg-emerald-profit' : 'bg-zinc-600'}`} />
+            <span className={`w-1.5 h-1.5 rounded-full ${!isPaper ? 'bg-electric-blue' : 'bg-zinc-600'}`} />
             Live Trading
           </button>
           <button
@@ -96,8 +98,8 @@ export const Header: React.FC<HeaderProps> = ({
             onClick={() => setTradingMode('paper')}
             title="Simulated trading with a $100 virtual balance — no real money, no API key required"
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${isPaper
-                ? 'bg-amber-400/15 text-amber-400 shadow-sm'
-                : 'text-zinc-500 hover:text-zinc-300'
+              ? 'bg-electric-blue/15 text-electric-blue shadow-sm'
+              : 'text-zinc-500 hover:text-zinc-300'
               }`}
           >
             <FlaskConical className="w-3 h-3" />
@@ -124,8 +126,8 @@ export const Header: React.FC<HeaderProps> = ({
                   setIsDropdownOpen(false);
                 }}
                 className={`w-full text-left px-3 py-2 text-xs font-medium rounded-lg flex items-center justify-between ${selectedExchange === 'binance'
-                    ? 'bg-electric-blue/15 text-electric-blue font-bold'
-                    : 'text-zinc-300 hover:bg-pitch-surface'
+                  ? 'bg-electric-blue/15 text-electric-blue font-bold'
+                  : 'text-zinc-300 hover:bg-pitch-surface'
                   }`}
               >
                 <span>Binance Spot</span>
@@ -137,8 +139,8 @@ export const Header: React.FC<HeaderProps> = ({
                   setIsDropdownOpen(false);
                 }}
                 className={`w-full text-left px-3 py-2 text-xs font-medium rounded-lg flex items-center justify-between ${selectedExchange === 'bybit'
-                    ? 'bg-electric-blue/15 text-electric-blue font-bold'
-                    : 'text-zinc-300 hover:bg-pitch-surface'
+                  ? 'bg-electric-blue/15 text-electric-blue font-bold'
+                  : 'text-zinc-300 hover:bg-pitch-surface'
                   }`}
               >
                 <span>Bybit Spot</span>
@@ -150,7 +152,7 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* Global Balance */}
         <div className="flex items-center gap-3 px-4 py-1.5 rounded-xl bg-pitch-surface border border-pitch-border">
-          <div className={`p-1.5 rounded-lg ${isPaper ? 'bg-amber-400/15 text-amber-400' : 'bg-electric-blue/15 text-electric-blue'}`}>
+          <div className="p-1.5 rounded-lg bg-electric-blue/15 text-electric-blue">
             <Wallet className="w-4 h-4" />
           </div>
           <div>
@@ -174,7 +176,7 @@ export const Header: React.FC<HeaderProps> = ({
         {/* Notification Bell & Profile */}
         <button className="p-2 rounded-xl bg-pitch-surface border border-pitch-border text-zinc-400 hover:text-white transition-colors relative">
           <Bell className="w-4 h-4" />
-          <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-neon-purple"></span>
+          <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-electric-blue"></span>
         </button>
 
         {/* User Profile with Logout */}
@@ -183,7 +185,7 @@ export const Header: React.FC<HeaderProps> = ({
             onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
             className="flex items-center gap-2 pl-2 border-l border-pitch-border hover:bg-pitch-surface rounded-xl py-1.5 pr-2 transition-colors"
           >
-            <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-electric-blue/30 to-neon-purple/30 border border-electric-blue/20 flex items-center justify-center text-zinc-200 font-bold text-xs">
+            <div className="w-8 h-8 rounded-xl bg-electric-blue/15 border border-electric-blue/20 flex items-center justify-center text-electric-blue font-bold text-xs">
               {user?.name?.[0]?.toUpperCase() ?? user?.email?.[0]?.toUpperCase() ?? 'U'}
             </div>
             <div className="text-left">
@@ -210,7 +212,7 @@ export const Header: React.FC<HeaderProps> = ({
                   setIsUserMenuOpen(false);
                   onLogout?.();
                 }}
-                className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium rounded-lg text-red-400 hover:bg-red-500/10 transition-colors"
+                className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium rounded-lg text-crimson-loss hover:bg-crimson-loss/10 transition-colors"
               >
                 <LogOut className="w-3.5 h-3.5" />
                 Sign Out
