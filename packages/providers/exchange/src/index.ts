@@ -134,6 +134,16 @@ abstract class BaseExchangeProvider implements ExchangeProvider {
       enableRateLimit: true,
       options: {
         defaultType: 'spot',
+        // defaultType alone does NOT stop ccxt's loadMarkets() (called
+        // implicitly by fetchTicker/fetchOHLCV/fetchOrderBook) from also
+        // pulling linear/inverse/option markets — ccxt's own default for
+        // this is options.fetchMarkets: ['spot','linear','inverse'] on
+        // Binance and ['spot','linear','inverse','option'] on Bybit. If
+        // any ONE of those non-spot endpoints is unreachable (e.g.
+        // dapi.binance.com, Binance's COIN-M futures API, timing out from
+        // this VPS), the whole loadMarkets() call fails — and with it
+        // every ticker fetch — even though we only ever trade spot here.
+        fetchMarkets: ['spot'],
       },
     };
 

@@ -142,42 +142,20 @@ export const AiStrategyView: React.FC<AiStrategyViewProps> = ({
       return;
     }
 
-    // Inform user backend is offline — local fallback activates below
-    setApiError('AI Service offline — displaying local blueprint estimate.');
-
-    // Fallback simulation
-    setTimeout(() => {
-      const generated = {
-        id: `bp_${Date.now()}_x9a2`,
-        pair,
-        tradingCapital: effectiveCapital,
-        sectionCount,
-        confidenceScore: 92,
-        aiReasoning:
-          `${pair} displays optimal Bollinger Band compression with strong market depth. ` +
-          `A ${sectionCount}-section grid with ATR-based gaps shields capital while capturing mean-reversion swings.`,
-        sections: allocations.map((alloc, idx) => ({
-          index: idx,
-          allocationPercent: alloc,
-          allocatedCapitalUsdt: (effectiveCapital * alloc) / 100,
-          gridCount: idx === 0 ? 10 : idx === 1 ? 7 : 5,
-          gridDistancePercent: 0.5 + idx * 0.25,
-          sectionGapPercent: 1.8 + idx * 1.2,
-          minNetProfitPercent: 0.5 + idx * 0.35,
-        })),
-        simulation: {
-          estimatedNetProfitUsdt: Number((effectiveCapital * 0.084).toFixed(2)),
-          estimatedNetProfitPercent: 8.4,
-          totalFeesUsdt: Number((effectiveCapital * 0.006).toFixed(2)),
-          maxDrawdownPercent: 3.2,
-          completedRounds: 28,
-        },
-        expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
-      };
-
-      setBlueprint(generated);
-      setIsBuilding(false);
-    }, 1000);
+    // buildStrategy() failed — do NOT fabricate a blueprint. A trading tool
+    // must never present made-up confidence scores, reasoning text, or grid
+    // parameters as if they came from real analysis; the trader has no way
+    // to tell a fabricated blueprint apart from a real one on this screen.
+    // (The previous fallback here generated one client-side with a fake
+    // "98% AI Confidence Score" and hardcoded reasoning text, and let the
+    // trader proceed all the way to "Approve & Start Paper Trading" on it —
+    // which then failed anyway once the backend correctly rejected the
+    // fake blueprint ID. Fail here, loudly, instead.)
+    setApiError(
+      'Could not generate a strategy blueprint — the AI service is unreachable or timed out. Please try again in a moment.',
+    );
+    setBlueprint(null);
+    setIsBuilding(false);
   };
 
   const handleApproveStrategy = async () => {
